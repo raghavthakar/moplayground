@@ -8,12 +8,16 @@
 #SBATCH --mem=32G
 #SBATCH -c 12
 #SBATCH -G 1
-#SBATCH --job-name=MORLAX-MOCheetah_run0
-#SBATCH --output=MORLAX-MOCheetah_run0_%j.out
+#SBATCH --job-name=MORLAX-MOCheetah
+#SBATCH --output=MORLAX-MOCheetah_%j.out
 
 # MORLAX multi-objective HalfCheetah (MOCheetah) on OSU HPC.
 # Submit from anywhere after git pull:
 #   sbatch scripts/slurm/morlax_mocheetah_run0.sh
+#   RUN_NAME=morlax-cheetah-run1 sbatch scripts/slurm/morlax_mocheetah_run0.sh
+#
+# Results land in: ${save_dir}/${RUN_NAME}
+# Default RUN_NAME appends the Slurm job id so repeats never overwrite.
 #
 # Layout assumed (matches local SMORL layout):
 #   ENV_DIR  = conda env prefix
@@ -24,6 +28,8 @@ set -euo pipefail
 ENV_DIR=/nfs/hpc/share/thakarr/SMORL
 CODE_DIR=/nfs/hpc/share/thakarr/SMORL/moplayground
 CONFIG=config/morlax/mocheetah.yaml
+# Unique per job unless you explicitly set RUN_NAME=...
+RUN_NAME="${RUN_NAME:-morlax-cheetah-job${SLURM_JOB_ID}}"
 
 module load conda
 source activate base
@@ -46,9 +52,11 @@ echo "Job:  ${SLURM_JOB_ID:-local}"
 echo "Env:  ${ENV_DIR}"
 echo "Code: ${CODE_DIR}"
 echo "Config: ${CONFIG}"
+echo "Run name: ${RUN_NAME}"
 echo "PYTHONPATH: ${PYTHONPATH}"
 nvidia-smi -L || true
 "${ENV_DIR}/bin/python" -c "import jax; print('JAX devices:', jax.devices())"
 "${ENV_DIR}/bin/python" -c "import moplayground; print('moplayground:', moplayground.__file__)"
 
-"${ENV_DIR}/bin/python" -m scripts.train "${CONFIG}"
+export SMORL_RUN_NAME="${RUN_NAME}"
+"${ENV_DIR}/bin/python" -m scripts.train "${CONFIG}" --name "${RUN_NAME}"
