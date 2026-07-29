@@ -28,6 +28,9 @@ conda activate "${ENV_DIR}"
 
 cd "${CODE_DIR}"
 
+# Use the git checkout directly (src layout) — no pip install needed.
+export PYTHONPATH="${CODE_DIR}/src${PYTHONPATH:+:${PYTHONPATH}}"
+
 export CUDA_VISIBLE_DEVICES=0
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
 
@@ -40,6 +43,8 @@ echo "Job:  ${SLURM_JOB_ID:-local}"
 echo "Env:  ${ENV_DIR}"
 echo "Code: ${CODE_DIR}"
 echo "Config: ${CONFIG}"
+echo "PYTHONPATH: ${PYTHONPATH}"
 "${ENV_DIR}/bin/python" -c "import jax; print('JAX devices:', jax.devices())"
+"${ENV_DIR}/bin/python" -c "import moplayground; print('moplayground:', moplayground.__file__)"
 
 "${ENV_DIR}/bin/python" -m scripts.train "${CONFIG}"
