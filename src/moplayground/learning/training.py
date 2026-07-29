@@ -62,15 +62,43 @@ def setup_amor(config):
     return train_fn, network_factory
 
 
+def _get_commit_hash(warn=False):
+    """Return HEAD hash without blocking on ``input()`` (Slurm-safe).
+
+    The installed ``minimal_mjx.utils.config.get_commit_hash`` prompts via
+    ``input()`` when the tree is dirty and does not accept ``warn=``.
+    """
+    import subprocess
+
+    try:
+        commit_hash = subprocess.check_output(
+            ['git', 'rev-parse', 'HEAD'], text=True
+        ).strip()
+        status = subprocess.check_output(
+            ['git', 'status', '--porcelain'], text=True
+        ).strip()
+        if status:
+            msg = (
+                'Warning: unadded or uncommitted changes in the repository.'
+            )
+            if warn:
+                input(f'{msg} Press ENTER to continue...')
+            else:
+                print(msg)
+        return commit_hash
+    except subprocess.CalledProcessError as e:
+        print(f'Error getting commit hash: {e}')
+        return None
+
+
 def create_training_directory(config, warn_github_changes=True):
     output_dir = Path(config['save_dir']) / config['name']
-    os.makedirs(output_dir, exist_ok=config['name'] == 'test')
+    os.makedirs(output_dir, exist_ok=True)
     
     # Save configuration
     config_save_path = Path(output_dir) / 'config.yaml'
     if config.name != 'test':
-        git_hash = mm.utils.config.get_commit_hash(warn=warn_github_changes)
-        config.git_hash = git_hash
+        config.git_hash = _get_commit_hash(warn=warn_github_changes)
     with open(config_save_path, 'w') as f:
         yaml.dump(config.to_dict(), f)
 
