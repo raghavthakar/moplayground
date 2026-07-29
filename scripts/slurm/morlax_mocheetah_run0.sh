@@ -1,7 +1,10 @@
 #!/bin/bash
 #SBATCH --time=0-02:00:00
-#SBATCH --partition=dgx2,dgxh,ampere
-#SBATCH --constraint=skylake
+# jax[cuda13] dropped Volta (V100 / sm_70) support, so the dgx2 (V100)
+# partition fails with "ptxas ... CC 7.0". Target H100 (dgxh) and A100
+# (ampere, sm_80) only. No CPU --constraint: skylake only matched the
+# V100 nodes and kept pulling jobs onto dgx2.
+#SBATCH --partition=dgxh,ampere
 #SBATCH --mem=32G
 #SBATCH -c 12
 #SBATCH -G 1
@@ -44,6 +47,7 @@ echo "Env:  ${ENV_DIR}"
 echo "Code: ${CODE_DIR}"
 echo "Config: ${CONFIG}"
 echo "PYTHONPATH: ${PYTHONPATH}"
+nvidia-smi -L || true
 "${ENV_DIR}/bin/python" -c "import jax; print('JAX devices:', jax.devices())"
 "${ENV_DIR}/bin/python" -c "import moplayground; print('moplayground:', moplayground.__file__)"
 
