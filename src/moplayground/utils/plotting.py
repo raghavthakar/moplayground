@@ -6,7 +6,11 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 import time
 from minimal_mjx.utils.plotting import get_subplot_grid
-from moplayground.utils.pareto import get_pareto_statistics, get_nondominated
+from moplayground.utils.pareto import (
+    compute_pareto_statistics,
+    get_pareto_statistics,
+    get_nondominated,
+)
 import wandb
 from pathlib import Path
 
@@ -27,6 +31,155 @@ class MOTrainingPlottingInfo:
             }
         ).to_csv(save_dir)
 
+def _as_numpy(x) -> np.ndarray:
+    """Convert jax / list values to a concrete numpy array."""
+    if hasattr(x, 'block_until_ready'):
+        x = x.block_until_ready()
+    return np.asarray(x)
+
+
+def _objective_names(labels) -> list[str]:
+    names = []
+    for i, lab in enumerate(labels or []):
+        if isinstance(lab, (list, tuple)):
+            raw = '+'.join(str(x) for x in lab) if lab else f'obj_{i}'
+        else:
+            raw = str(lab) if lab not in (None, '') else f'obj_{i}'
+        # wandb-friendly metric key fragment
+        names.append(raw.replace(' ', '_').replace('/', '_'))
+    return names
+
+
+def _scalarize(value):
+    """Reduce a metric value to a Python float when possible."""
+    arr = _as_numpy(value)
+    if arr.size == 1:
+        return float(arr)
+    return float(np.mean(arr))
+
+
+def _log_mo_wandb(
+    run: wandb.Run,
+    num_steps: int,
+    metrics: dict,
+    rewards: np.ndarray,
+    directives: np.ndarray,
+    labels,
+    elapsed_s: float,
+    reward_plot_html: str | None = None,
+):
+    """Log MORL eval scalars, training losses, and a per-policy performance table."""
+    rewards = np.asarray(rewards, dtype=float)
+    directives = np.asarray(directives, dtype=float)
+    if rewards.ndim == 1:
+        rewards = rewards[None, :]
+    if directives.ndim == 1:
+        directives = directives[None, :]
+
+    n_points, n_objs = rewards.shape
+    obj_names = _objective_names(labels)
+    while len(obj_names) < n_objs:
+        obj_names.append(f'obj_{len(obj_names)}')
+
+    nd_idx = set(int(i) for i in get_nondominated(rewards))
+    try:
+        stats = compute_pareto_statistics(rewards)  # default ref_point_max = 0
+    except Exception as e:
+        print(f'Warning: could not compute Pareto statistics: {e}')
+        stats = None
+
+    # --- Performance table: one row per evaluated preference / return vector ---
+    columns = (
+        ['step', 'eval_id', 'nondominated']
+        + [f'w/{name}' for name in obj_names]
+        + [f'return/{name}' for name in obj_names]
+        + ['scalarized_return']
+    )
+    table = wandb.Table(columns=columns)
+    for i in range(n_points):
+        w = directives[i]
+        r = rewards[i]
+        scalarized = float(np.dot(w, r)) if w.shape[0] == r.shape[0] else float(np.sum(r))
+        row = (
+            [int(num_steps), int(i), i in nd_idx]
+            + [float(x) for x in w]
+            + [float(x) for x in r]
+            + [scalarized]
+        )
+        table.add_data(*row)
+
+    log_dict = {
+        'eval/performances': table,
+        'eval/num_points': int(n_points),
+        'eval/num_nondominated': int(len(nd_idx)),
+        'eval/coverage_ratio': float(len(nd_idx) / max(n_points, 1)),
+        'time/elapsed_s': float(elapsed_s),
+    }
+    if reward_plot_html is not None:
+        log_dict['reward_plot'] = wandb.Html(reward_plot_html)
+
+    if stats is not None:
+        log_dict.update({
+            'eval/hypervolume': float(stats.hypervolume),
+            'eval/sparsity': float(stats.sparsity),
+        })
+        for j, name in enumerate(obj_names):
+            # Explicit HV reference (maximization-space units = raw returns).
+            log_dict[f'eval/hv/ref_point_max/{name}'] = float(stats.ref_point_max[j])
+            log_dict[f'eval/hv/ideal_max/{name}'] = float(stats.ideal_max[j])
+            log_dict[f'eval/hv/nadir_max/{name}'] = float(stats.nadir_max[j])
+
+        # Persist the HV convention once on the run config (idempotent).
+        if not run.config.get('hv_definition'):
+            run.config.update(
+                {
+                    'hv_definition': {
+                        'sense': stats.sense,
+                        'ref_point_max': stats.ref_point_max.tolist(),
+                        'ref_point_min': stats.ref_point_min.tolist(),
+                        'ref_point_max_meaning': (
+                            'HV reference in maximization space (same units as '
+                            'episode returns). Default is the origin: only '
+                            'points that improve on 0 contribute volume.'
+                        ),
+                        'library': 'pymoo.indicators.hv.HV',
+                        'sparsity': (
+                            'pymoo SpacingIndicator on per-front min-max '
+                            'normalized non-dominated front; NaN if |ND|<2'
+                        ),
+                        'notes': stats.notes,
+                    }
+                },
+                allow_val_change=True,
+            )
+
+    for j, name in enumerate(obj_names):
+        col = rewards[:, j]
+        log_dict[f'eval/return/{name}/mean'] = float(np.mean(col))
+        log_dict[f'eval/return/{name}/std'] = float(np.std(col))
+        log_dict[f'eval/return/{name}/max'] = float(np.max(col))
+        log_dict[f'eval/return/{name}/min'] = float(np.min(col))
+        if j < directives.shape[1]:
+            log_dict[f'eval/directive/{name}/mean'] = float(np.mean(directives[:, j]))
+
+    # Training / eval timing scalars (when merged in from acting.run_evaluation)
+    for key, value in metrics.items():
+        if key in ('reward', 'directive'):
+            continue
+        if isinstance(key, str) and (
+            key.startswith('training/')
+            or key.startswith('eval/')
+            or key.endswith('_loss')
+            or key in ('total_loss', 'policy_loss', 'v_loss', 'entropy_loss')
+        ):
+            try:
+                log_dict[key if '/' in key else f'training/{key}'] = _scalarize(value)
+            except Exception:
+                pass
+
+    run.log(log_dict, step=num_steps)
+
+
 def plot_mo_progress(
     num_steps       : int,
     metrics         : dict,
@@ -34,15 +187,17 @@ def plot_mo_progress(
     save_dir        : Path,
     run             : wandb.Run = None
 ):
-    # print current itme
+    # print current time
     tz = ZoneInfo("America/New_York")
     now = datetime.now(tz)
     print(now.strftime("%Y-%m-%d %H:%M:%S %Z"))
     
     # save data from iteration
+    rewards = _as_numpy(metrics['reward'])
+    directives = _as_numpy(metrics['directive'])
     training_data.iterations.append(num_steps)
-    training_data.paretos.append(metrics['reward'])
-    training_data.directives.append(metrics['directive'])
+    training_data.paretos.append(rewards)
+    training_data.directives.append(directives)
     training_data.times.append(time.time())
     training_data.save(save_dir / 'progress.csv')
 
@@ -62,12 +217,20 @@ def plot_mo_progress(
     
     # save and upload to wandb
     fig.savefig(save_dir / 'progress.svg')
+    plt.close(fig)
     if run:
         with open(save_dir / 'progress.svg', "r") as f:
             svg = f.read()
-        run.log(
-            {"reward_plot": wandb.Html(svg)},
-            step=num_steps,
+        elapsed_s = training_data.times[-1] - training_data.start_time
+        _log_mo_wandb(
+            run=run,
+            num_steps=num_steps,
+            metrics=metrics,
+            rewards=rewards,
+            directives=directives,
+            labels=training_data.labels,
+            elapsed_s=elapsed_s,
+            reward_plot_html=svg,
         )
 
 def default_coloring(tradeoff):

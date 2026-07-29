@@ -119,6 +119,8 @@ _EXPORTS = {
     # --- utils -----------------------------------------------------------
     'get_nondominated': 'moplayground.utils.pareto',
     'get_pareto_statistics': 'moplayground.utils.pareto',
+    'compute_pareto_statistics': 'moplayground.utils.pareto',
+    'ParetoStatistics': 'moplayground.utils.pareto',
     'hypervolume_from_nondominated': 'moplayground.utils.pareto',
     'sparsity_from_normalized_nondominated': 'moplayground.utils.pareto',
     'MOTrainingPlottingInfo': 'moplayground.utils.plotting',
@@ -280,6 +282,8 @@ if TYPE_CHECKING:  # static analysers / IDE completion
         solve_transform as solve_transform,
     )
     from .utils.pareto import (
+        ParetoStatistics as ParetoStatistics,
+        compute_pareto_statistics as compute_pareto_statistics,
         get_nondominated as get_nondominated,
         get_pareto_statistics as get_pareto_statistics,
         hypervolume_from_nondominated as hypervolume_from_nondominated,

@@ -172,9 +172,16 @@ def train_policy(
         normalize_observations=config.learning_params.base_ppo_params.normalize_observations,
         network_factory=network_factory,
     )
+    opt = env.params.reward.optimization
+    # Prefer human-readable labels when present; fall back to objective ids.
+    plot_labels = (
+        list(opt.labels)
+        if hasattr(opt, 'labels') and opt.labels is not None
+        else list(opt.objectives)
+    )
     training_data = mop.utils.plotting.MOTrainingPlottingInfo(
         start_time = time.time(),
-        labels = env.params.reward.optimization.objectives
+        labels = plot_labels,
     )
         
     train_fn = functools.partial(
