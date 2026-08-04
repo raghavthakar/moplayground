@@ -1,0 +1,78 @@
+# Dense MORLAX MOHopper baseline: run (forward distance) vs jump (height).
+# This is the pre-sparsification baseline for the heterogeneous-sparsity study
+# (thresholds get added on top of this later). Hyperparameters mirror the
+# existing config/mohopper.yaml hopper tuning; only housekeeping (name,
+# save_dir, description) is HPC-oriented.
+name: morlax-hopper-run0
+save_dir: /nfs/hpc/share/thakarr/SMORL/results/morlax_hopper
+description: 'Dense MORLAX MOHopper baseline (run vs jump); pre-sparsification'
+algorithm: morlax
+env: MOHopper
+backend: np # jnp or np. Always uses jnp for training
+mo2so:
+  enabled: false
+  weighting: [0.5, 0.5]
+env_config:
+  ctrl_dt: 0.01
+  sim_dt: 0.005
+  action_scale: 3.0
+  history_length: 5
+  ideal_base_height: 0.5
+  ideal_base_vel: 0.5
+  min_base_height: 0.3
+  add_random_joint_state: false
+  add_random_pitch: false
+  reward:
+    weights:
+      run:        1.5
+      jump:       12.0
+      ctrl_cost: -0.0002
+      alive:      1.0
+      upright:    4.0
+      done:       0
+    sigmas:
+      height:     0.01
+      speed:      0.01
+      energy:     0.1
+      imitation:  0.03
+    optimization:
+      objectives:        [['run'], ['jump']]
+      shared_objectives: ['alive', 'ctrl_cost']
+      labels:            ['Forward Distance', 'Jump Height']
+  termination:
+    enabled: true
+    base_height: 0.2
+learning_params:
+  base_ppo_params:
+    action_repeat: 1
+    batch_size: 32
+    clipping_epsilon: 0.2
+    deterministic_eval: true
+    discounting: 0.99
+    entropy_cost: 0.01
+    episode_length: 500
+    learning_rate: 0.000005
+    max_grad_norm: 1.0
+    normalize_observations: true
+    num_envs: 1024
+    num_evals: 15
+    num_minibatches: 32
+    num_timesteps: 50000000
+    num_updates_per_batch: 4
+    reward_scaling: 1.0
+    unroll_length: 30
+  morlax_params:
+    train_fn_params:
+      alpha: 1.0
+      k: 8
+      sampling: sparse-heavytail
+      warmup_frac: 0.0
+    network_params:
+      hypertype: dual
+      hypersize: [128, 128]
+      num_features: 16
+      policy_hidden_layer_sizes: [64, 64]
+      value_hidden_layer_sizes:  [64, 64]
+    warmup_params:
+      enabled: false
+      policy: results/MOHopper-as-so/warm-start/test/config.yaml
