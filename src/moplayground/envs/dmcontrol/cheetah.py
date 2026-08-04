@@ -128,12 +128,6 @@ class MOCheetah(MultiObjectiveBase):
             'run'    : self.reward_run(info),
             'done'   : self.reward_done(done)
         }
-        # Sparse variant of the run objective: emitted only when config opts in,
-        # so dense configs keep an identical reward-key set (see get_metrics,
-        # which requires a weight for every returned key).
-        run_milestone_cfg = self.params.reward.get('run_milestone', None)
-        if run_milestone_cfg is not None and run_milestone_cfg.get('enabled', False):
-            rewards['run_milestone'] = self.reward_run_milestone(info)
         return rewards
     
     def reward_height(self, data: mjx.Data):
@@ -143,24 +137,11 @@ class MOCheetah(MultiObjectiveBase):
         return 1.0
     
     def reward_energy(self, action):
-        # Per-step energy stays strictly positive when this constant exceeds the
-        # max ||a||^2 (=6 for 6 clipped actuators), which removes the
-        # fall-to-cut-cost exploit. Defaults to 4.0 for the dense baseline.
-        energy_constant = self.params.reward.get('energy_constant', 4.0)
-        return energy_constant - 1.0 * self._np.square(action).sum()
+        return 4.0 - 1.0 * self._np.square(action).sum()
     
     def reward_run(self, info):
         reward_run = (info['xposafter'] - info['xposbefore']) / self.dt
         return self._np.min(self._np.array([4.0, reward_run]))
-
-    def reward_run_milestone(self, info):
-        # Sparse run reward: 0 every step until a new forward distance bucket is
-        # crossed, then +1 per bucket (scaled by weights['run_milestone']).
-        # Uses within-step positions so it auto-resets on episode boundaries.
-        step_size     = self.params.reward.run_milestone.step_size
-        before_bucket = self._np.floor(info['xposbefore'] / step_size)
-        after_bucket  = self._np.floor(info['xposafter'] / step_size)
-        return self._np.maximum(0.0, after_bucket - before_bucket)
     
     def reward_done(self, done):
         return self._np.array(done)
