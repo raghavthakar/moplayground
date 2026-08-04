@@ -16,6 +16,7 @@ from moplayground.moppo import morlax
 from moplayground.moppo import amor
 from moplayground.moppo import factory
 from moplayground.learning.wrappers import MultiObjectiveEpisodeWrapper
+from moplayground.learning.wrappers import EpisodicThresholdWrapper
 from brax.envs.wrappers.training import VmapWrapper
 
 # jax and MJX imports
@@ -224,7 +225,18 @@ def mo_wrapper(
 ) -> wrapper.Wrapper:
     """Multi-Objective Wrapper"""
 
+    # Optional episodic-return sparsification, read from the (unwrapped) env's
+    # config. Absent/disabled => identical to the dense pipeline.
+    thresholds = None
+    reward_cfg = getattr(getattr(env, 'params', None), 'reward', None)
+    if reward_cfg is not None and 'episodic_threshold' in reward_cfg:
+        threshold_cfg = reward_cfg.episodic_threshold
+        if threshold_cfg.get('enabled', False):
+            thresholds = list(threshold_cfg.thresholds)
+
     env = VmapWrapper(env)
     env = MultiObjectiveEpisodeWrapper(env, episode_length, action_repeat)
+    if thresholds is not None:
+        env = EpisodicThresholdWrapper(env, thresholds)
     env = wrapper.BraxAutoResetWrapper(env)
     return env

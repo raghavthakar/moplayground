@@ -56,6 +56,36 @@ class MultiObjectiveEpisodeWrapper(Wrapper):
         state.info['episode_done'] = done
         return state.replace(done=done)
     
+class EpisodicThresholdWrapper(Wrapper):
+    """Sparsify each objective by an episodic-return threshold.
+
+    Wraps a ``MultiObjectiveEpisodeWrapper`` and gates the per-step reward of
+    each objective by whether that objective's *running episodic return* has
+    crossed its threshold. Below threshold the objective emits ``0`` (a flat
+    zero-return plateau that NSGA-II / Pareto selection cannot rank); once the
+    running return reaches the threshold the true per-step reward flows, so the
+    per-step reward scale is preserved (no terminal reward spike).
+
+    Relies on the wrapped episode wrapper maintaining the per-objective running
+    sum in ``info['episode_metrics']['sum_reward']`` (reset each episode).
+
+    Args:
+        env: The wrapped env (must expose ``episode_metrics.sum_reward``).
+        thresholds: Per-objective thresholds, length == reward dimension,
+            ordered to match ``reward.optimization.objectives``.
+    """
+
+    def __init__(self, env: Env, thresholds):
+        super().__init__(env)
+        self.thresholds = jnp.asarray(thresholds, dtype=jnp.float32)
+
+    def step(self, state: State, action: jax.Array) -> State:
+        nstate = self.env.step(state, action)
+        running = nstate.info['episode_metrics']['sum_reward']
+        gate = (running >= self.thresholds).astype(nstate.reward.dtype)
+        return nstate.replace(reward=nstate.reward * gate)
+
+
 class MultiObjectiveEvalWrapper(Wrapper):
     """Brax env with eval metrics."""
 
