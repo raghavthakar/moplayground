@@ -1,0 +1,89 @@
+# Sparse-run MOCheetah: run objective is sparsified into a distance-milestone
+# event while energy stays dense. Built to study first-objective lock-in.
+#   - run_milestone: 0 until the cheetah crosses a new `step_size` bucket, then +1.
+#   - energy_constant > 6 keeps per-step energy strictly positive (no fall-to-cut
+#     -cost exploit), and `alive` is routed into the energy group (NOT shared) so
+#     the sparse run dimension is exactly 0 until a milestone fires.
+# Derived from config/morlax/mocheetah.yaml (paper-matched baseline).
+name: morlax-cheetah-sparse-run0
+save_dir: /nfs/hpc/share/thakarr/SMORL/results/morlax_cheetah_sparse
+description: 'MORLAX MOCheetah with sparse distance-milestone run vs dense energy'
+algorithm: morlax
+env: MOCheetah
+backend: np # jnp or np. Always uses jnp for training
+mo2so:
+  enabled: false
+  weighting: [0.5, 0.5]
+env_config:
+  ctrl_dt: 0.01
+  sim_dt: 0.01
+  action_scale: 1.0
+  history_length: 5
+  ideal_base_height: 0.5
+  ideal_base_vel: 0.5
+  min_base_height: 0.3
+  add_random_joint_state: false
+  add_random_pitch: false
+  reward:
+    # Configurable per-step energy constant. >6 => strictly positive per-step
+    # energy (max ||a||^2 = 6), so surviving longer is always better.
+    energy_constant: 7.0
+    # Sparse run objective. Reward = new forward buckets crossed this step.
+    run_milestone:
+      enabled: true
+      step_size: 3.0   # meters of forward progress per milestone
+    weights:
+      run:           1.0
+      run_milestone: 20.0   # magnitude of one milestone; tune vs energy scale
+      height:        10.0
+      energy:        1.0
+      alive:         1.0
+      done:          0
+    sigmas:
+      height:     0.01
+      speed:      0.01
+      energy:     0.1
+      imitation:  0.03
+    optimization:
+      # Sparse run vs dense energy. `alive` folded into the energy group (not
+      # shared) so the run dimension stays exactly 0 until a milestone fires.
+      objectives:        [['run_milestone'], ['energy', 'alive']]
+      shared_objectives: []
+      labels:            ['Distance Milestones', 'Energy Efficiency']
+  termination:
+    enabled: true
+    base_height: 0.2
+learning_params:
+  base_ppo_params:
+    action_repeat: 1
+    batch_size: 64
+    clipping_epsilon: 0.1
+    deterministic_eval: true
+    discounting: 0.98
+    entropy_cost: 0.01
+    episode_length: 500
+    learning_rate: 0.0005
+    max_grad_norm: 1.0
+    normalize_observations: true
+    num_envs: 128
+    num_evals: 15
+    num_minibatches: 2
+    num_timesteps: 50000000
+    num_updates_per_batch: 4
+    reward_scaling: 1.0
+    unroll_length: 20
+  morlax_params:
+    train_fn_params:
+      alpha: 1.0
+      k: 8
+      sampling: sparse-heavytail
+      warmup_frac: 0.0
+    network_params:
+      hypertype: single
+      hypersize: [128, 128]
+      num_features: 16
+      policy_hidden_layer_sizes: [64, 64]
+      value_hidden_layer_sizes: [64, 64]
+    warmup_params:
+      enabled: false
+      policy: playground-results/SO-MOCheetah/a-good-policy/config.yaml
