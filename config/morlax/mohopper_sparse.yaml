@@ -5,9 +5,11 @@
 # zero-return plateau that Pareto selection cannot rank. This is the naive
 # "no algorithmic changes" baseline for the heterogeneous-sparsity sweep.
 #
-# `episodic_threshold.thresholds` is a placeholder; scripts/sparse_threshold_sweep.py
-# overrides it per run (thresholds = sparsity_fraction * per-objective max return).
-# num_timesteps is 50M to match the reference point where run~2500 / jump~2200.
+# `episodic_threshold.thresholds` holds literal per-objective thresholds (order
+# matches `objectives`, i.e. [run, jump]); scripts/sparse_threshold_sweep.py
+# overrides these directly per run. Set enabled=false (or all-zero thresholds)
+# for a dense baseline. num_timesteps is 50M to match the reference point where
+# the dense run/jump returns top out around 2500 / 2200.
 name: morlax-hopper-sparse-run0
 save_dir: /nfs/hpc/share/thakarr/SMORL/results/morlax_hopper_sparse_sweep
 description: 'Episodic-return-sparsified MORLAX MOHopper (run vs jump); naive baseline sweep'

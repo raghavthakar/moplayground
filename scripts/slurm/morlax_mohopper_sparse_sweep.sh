@@ -8,19 +8,21 @@
 #SBATCH -G 1
 #SBATCH --job-name=MORLAX-MOHopper-sparse
 #SBATCH --output=MORLAX-MOHopper-sparse_%A_%a.out
-# 6 sparsity levels -> array indices 0..5.
-# If you change --fractions below, update this range to match.
-#SBATCH --array=0-5
+# One array task per threshold set in THRESHOLDS below.
+# 9 sets (0..200 in steps of 25) -> array indices 0..8. If you edit THRESHOLDS,
+# update this range.
+#SBATCH --array=0-8
 
 # Naive episodic-return sparsity sweep for MOHopper (run vs jump), vanilla
-# MORLAX, no algorithmic changes. Each array task runs one sparsity level via
-# scripts.sparse_threshold_sweep --index. Finds where the basic algo breaks.
+# MORLAX, no algorithmic changes. Each array task runs one literal per-objective
+# threshold set via scripts.sparse_threshold_sweep --index. Finds where the
+# basic algo breaks.
 # Submit:
 #   sbatch scripts/slurm/morlax_mohopper_sparse_sweep.sh
-# One level interactively for debugging:
+# One set interactively for debugging:
 #   SLURM_ARRAY_TASK_ID=0 bash scripts/slurm/morlax_mohopper_sparse_sweep.sh
 #
-# Results land in: ${save_dir}/${base_name}-sparsity=<fraction>
+# Results land in: ${save_dir}/${base_name}-thr=<run>x<jump>
 # (save_dir = morlax_hopper_sparse_sweep, from config/morlax/mohopper_sparse.yaml)
 
 set -euo pipefail
@@ -29,12 +31,12 @@ ENV_DIR=/nfs/hpc/share/thakarr/SMORL
 CODE_DIR=/nfs/hpc/share/thakarr/SMORL/moplayground
 CONFIG=config/morlax/mohopper_sparse.yaml
 
-# Sweep grid — must match the --array range above (one task per fraction).
-# Thresholds per objective = fraction * OBJ_MAXES (run~2500, jump~2200 @ 50M).
-FRACTIONS="0.0,0.25,0.5,0.7,0.85,0.95"
-OBJ_MAXES="2500,2200"
+# Literal per-objective episodic-return thresholds, one set per ';'-group,
+# each ','-separated in objective order [run, jump]. All-zero => dense baseline.
+# Edit these directly; keep the --array range above equal to the set count.
+THRESHOLDS="0,0;25,25;50,50;75,75;100,100;125,125;150,150;175,175;200,200"
 
-# Array index selects the sparsity level. Falls back to 0 for interactive runs.
+# Array index selects the threshold set. Falls back to 0 for interactive runs.
 INDEX="${SLURM_ARRAY_TASK_ID:-0}"
 
 module load conda
@@ -57,8 +59,8 @@ echo "Job:  ${SLURM_JOB_ID:-local} (array ${SLURM_ARRAY_JOB_ID:-NA} task ${SLURM
 echo "Env:  ${ENV_DIR}"
 echo "Code: ${CODE_DIR}"
 echo "Config: ${CONFIG}"
-echo "Fractions: [${FRACTIONS}]  Obj maxes: [${OBJ_MAXES}]"
-echo "Sparsity index: ${INDEX}"
+echo "Thresholds: [${THRESHOLDS}]"
+echo "Threshold-set index: ${INDEX}"
 echo "PYTHONPATH: ${PYTHONPATH}"
 nvidia-smi -L || true
 "${ENV_DIR}/bin/python" -c "import jax; print('JAX devices:', jax.devices())"
@@ -66,7 +68,6 @@ nvidia-smi -L || true
 
 "${ENV_DIR}/bin/python" -m scripts.sparse_threshold_sweep \
     --base "${CONFIG}" \
-    --fractions "${FRACTIONS}" \
-    --obj-maxes "${OBJ_MAXES}" \
+    --thresholds "${THRESHOLDS}" \
     --index "${INDEX}" \
     --skip-existing
