@@ -42,7 +42,7 @@ CONFIG=config/morlax/mohopper_sparse.yaml
 # each ','-separated in objective order [run, jump]. All-zero => dense baseline.
 # Placeholder ladder — recalibrate after the dense (0,0) run (see header note).
 # Edit these directly; keep the --array range above equal to the set count.
-THRESHOLDS="0,0;100,100;200,200;300,300;400,400;500,500"
+THRESHOLDS="0,0;25,25;50,50;75,75;100,100;125,125;150,150;175,175;200,200"
 
 # Array index selects the threshold set. Falls back to 0 for interactive runs.
 INDEX="${SLURM_ARRAY_TASK_ID:-0}"
