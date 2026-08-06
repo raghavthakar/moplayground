@@ -40,7 +40,9 @@ env_config:
       imitation:  0.03
     optimization:
       objectives:        [['run'], ['jump']]
-      shared_objectives: ['alive', 'ctrl_cost']
+      # No shared terms: unlock thresholds measure genuine run/jump achievement,
+      # not survival. Keep identical to the MORLAX sparse config.
+      shared_objectives: []
       labels:            ['Forward Distance', 'Jump Height']
     # Unlock thresholds for extrinsic eval (Hard point from MORLAX sparse sweep).
     episodic_threshold:

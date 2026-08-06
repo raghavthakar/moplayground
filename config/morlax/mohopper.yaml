@@ -37,7 +37,8 @@ env_config:
       imitation:  0.03
     optimization:
       objectives:        [['run'], ['jump']]
-      shared_objectives: ['alive', 'ctrl_cost']
+      # No shared terms: pure per-objective task returns (see mohopper_sparse).
+      shared_objectives: []
       labels:            ['Forward Distance', 'Jump Height']
   termination:
     enabled: true

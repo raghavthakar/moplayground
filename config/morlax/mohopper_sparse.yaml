@@ -44,7 +44,10 @@ env_config:
       imitation:  0.03
     optimization:
       objectives:        [['run'], ['jump']]
-      shared_objectives: ['alive', 'ctrl_cost']
+      # No shared terms: each objective return is the pure task signal, so the
+      # episodic-return threshold measures genuine run/jump achievement rather
+      # than survival. Viability is handled by termination, not additive reward.
+      shared_objectives: []
       labels:            ['Forward Distance', 'Jump Height']
     # Episodic-return sparsification. thresholds order matches `objectives`
     # (i.e. [run, jump]). Overridden by the sweep driver.

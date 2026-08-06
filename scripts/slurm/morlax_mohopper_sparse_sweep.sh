@@ -9,14 +9,21 @@
 #SBATCH --job-name=MORLAX-MOHopper-sparse
 #SBATCH --output=MORLAX-MOHopper-sparse_%A_%a.out
 # One array task per threshold set in THRESHOLDS below.
-# 9 sets (0..200 in steps of 25) -> array indices 0..8. If you edit THRESHOLDS,
-# update this range.
-#SBATCH --array=0-8
+# 6 sets (0..500 in steps of 100) -> array indices 0..5. If you edit THRESHOLDS,
+# update this range to match the set count.
+#SBATCH --array=0-5
 
-# Naive episodic-return sparsity sweep for MOHopper (run vs jump), vanilla
-# MORLAX, no algorithmic changes. Each array task runs one literal per-objective
+# Episodic-return sparsity sweep for MOHopper (run vs jump), vanilla MORLAX,
+# no algorithmic changes. Each array task runs one literal per-objective
 # threshold set via scripts.sparse_threshold_sweep --index. Finds where the
 # basic algo breaks.
+#
+# NOTE: the reward structure is now clean (no shared `alive`/`ctrl_cost` added
+# to the objective dimensions; `jump` is zero at rest). Objective returns are
+# therefore on a different — and asymmetric — scale than the old runs, so the
+# previous 125,125 failure point is void. Run the dense baseline (index 0 =
+# 0,0) FIRST to read the run/jump return ceilings, then recalibrate THRESHOLDS
+# (likely asymmetric, e.g. run threshold >> jump threshold) and the array range.
 # Submit:
 #   sbatch scripts/slurm/morlax_mohopper_sparse_sweep.sh
 # One set interactively for debugging:
@@ -33,8 +40,9 @@ CONFIG=config/morlax/mohopper_sparse.yaml
 
 # Literal per-objective episodic-return thresholds, one set per ';'-group,
 # each ','-separated in objective order [run, jump]. All-zero => dense baseline.
+# Placeholder ladder — recalibrate after the dense (0,0) run (see header note).
 # Edit these directly; keep the --array range above equal to the set count.
-THRESHOLDS="0,0;25,25;50,50;75,75;100,100;125,125;150,150;175,175;200,200"
+THRESHOLDS="0,0;100,100;200,200;300,300;400,400;500,500"
 
 # Array index selects the threshold set. Falls back to 0 for interactive runs.
 INDEX="${SLURM_ARRAY_TASK_ID:-0}"

@@ -136,8 +136,11 @@ class MOHopper(MultiObjectiveBase):
         return (info['posafter'] - info['posbefore']) / self.dt
     
     def reward_jump(self, info):
+        # Zero at the nominal standing height; positive only when the base
+        # rises above it (a genuine jump). No standing offset, so a policy that
+        # merely stands tall accrues no jump return.
         return self._np.clip(
-            info['height'] - HopperInterface.DEFAULT_FF[1] + 0.2,
+            info['height'] - HopperInterface.DEFAULT_FF[1],
             0.0,
             self._np.inf,
         )
