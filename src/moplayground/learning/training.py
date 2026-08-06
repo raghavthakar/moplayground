@@ -14,10 +14,12 @@ from brax.training.agents.ppo import checkpoint
 import moplayground as mop
 from moplayground.moppo import morlax
 from moplayground.moppo import amor
+from moplayground.moppo import intrinsic_ppo
 from moplayground.moppo import factory
 from moplayground.learning.wrappers import MultiObjectiveEpisodeWrapper
 from moplayground.learning.wrappers import EpisodicThresholdWrapper
 from brax.envs.wrappers.training import VmapWrapper
+from brax.training.agents.ppo import networks as ppo_networks
 
 # jax and MJX imports
 from mujoco_playground import wrapper
@@ -63,6 +65,50 @@ def setup_amor(config):
     return train_fn, network_factory
 
 
+def setup_intrinsic_ppo(config):
+    """Stage-1 explorer: PPO on RND novelty; extrinsic eval for unlocks."""
+    general_ppo_params = dict(config.learning_params.base_ppo_params)
+    ip_cfg = config.learning_params.intrinsic_ppo_params
+    train_overrides = dict(ip_cfg.get('train_fn_params', {}))
+    network_params = dict(ip_cfg.get('network_params', {}))
+    rnd_params = dict(ip_cfg.get('rnd_params', {}))
+
+    # Unlock thresholds: prefer explicit intrinsic config, else env sparse gate.
+    unlock = train_overrides.pop('unlock_thresholds', None)
+    if unlock is None:
+        thr_cfg = config.env_config.reward.get('episodic_threshold', None)
+        if thr_cfg is not None and thr_cfg.get('enabled', False):
+            unlock = list(thr_cfg.thresholds)
+
+    train_fn_params = general_ppo_params | train_overrides
+    train_fn_params['unlock_thresholds'] = unlock
+    # Map rnd_* keys expected by intrinsic_ppo.train
+    if 'hidden_layer_sizes' in rnd_params:
+        train_fn_params['rnd_hidden_layer_sizes'] = rnd_params['hidden_layer_sizes']
+    if 'output_size' in rnd_params:
+        train_fn_params['rnd_output_size'] = rnd_params['output_size']
+    if 'learning_rate' in rnd_params:
+        train_fn_params['rnd_learning_rate'] = rnd_params['learning_rate']
+
+    network_factory = functools.partial(
+        ppo_networks.make_ppo_networks,
+        **network_params,
+    )
+    train_fn = functools.partial(
+        intrinsic_ppo.train,
+        **train_fn_params,
+        network_factory=network_factory,
+    )
+    return train_fn, network_factory
+
+
+_ALGO_HANDLERS = {
+    'morlax': setup_morlax,
+    'amor':   setup_amor,
+    'intrinsic_ppo': setup_intrinsic_ppo,
+}
+
+
 def _get_commit_hash(warn=False):
     """Return HEAD hash without blocking on ``input()`` (Slurm-safe).
 
@@ -95,8 +141,7 @@ def _get_commit_hash(warn=False):
 def create_training_directory(config, warn_github_changes=True):
     output_dir = Path(config['save_dir']) / config['name']
     os.makedirs(output_dir, exist_ok=True)
-    
-    # Save configuration
+
     config_save_path = Path(output_dir) / 'config.yaml'
     if config.name != 'test':
         config.git_hash = _get_commit_hash(warn=warn_github_changes)
@@ -104,11 +149,6 @@ def create_training_directory(config, warn_github_changes=True):
         yaml.dump(config.to_dict(), f)
 
     return output_dir
-
-_ALGO_HANDLERS = {
-    'morlax': setup_morlax,
-    'amor':   setup_amor,
-}
 
 
 def train_policy(
