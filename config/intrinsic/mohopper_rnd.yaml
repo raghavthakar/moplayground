@@ -42,11 +42,10 @@ env_config:
       objectives:        [['run'], ['jump']]
       shared_objectives: ['alive', 'ctrl_cost']
       labels:            ['Forward Distance', 'Jump Height']
-    # Used as unlock thresholds for extrinsic eval (and optional train gating).
-    # Set these to a Hard point from your MORLAX sparse sweep.
+    # Unlock thresholds for extrinsic eval (Hard point from MORLAX sparse sweep).
     episodic_threshold:
       enabled: true
-      thresholds: [100.0, 100.0]
+      thresholds: [125.0, 125.0]
   termination:
     enabled: true
     base_height: 0.2
