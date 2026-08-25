@@ -89,6 +89,8 @@ def setup_intrinsic_ppo(config):
         train_fn_params['rnd_output_size'] = rnd_params['output_size']
     if 'learning_rate' in rnd_params:
         train_fn_params['rnd_learning_rate'] = rnd_params['learning_rate']
+    if 'scale' in rnd_params:
+        train_fn_params['rnd_reward_scale'] = rnd_params['scale']
 
     network_factory = functools.partial(
         ppo_networks.make_ppo_networks,

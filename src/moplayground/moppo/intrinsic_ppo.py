@@ -210,12 +210,18 @@ def _intrinsic_actor_step(
     rnd_target_params,
     rnd_state,
     extra_fields=(),
+    rnd_reward_scale: float = 1.0,
 ):
     """Env step with RND novelty as the scalar training reward."""
     actions, policy_extras = policy(env_state.obs, key)
     nstate = env.step(env_state, actions)
     intrinsic = rnd_lib.novelty_reward(
-        rnd_module, rnd_target_params, rnd_state, env_state.obs, actions
+        rnd_module,
+        rnd_target_params,
+        rnd_state,
+        env_state.obs,
+        actions,
+        scale=rnd_reward_scale,
     )
     # Env may return a vector reward; keep it only for diagnostics.
     extrinsic = nstate.reward
@@ -241,6 +247,7 @@ def _generate_intrinsic_unroll(
     rnd_target_params,
     rnd_state,
     extra_fields=(),
+    rnd_reward_scale: float = 1.0,
 ):
     def f(carry, _):
         state, current_key = carry
@@ -254,6 +261,7 @@ def _generate_intrinsic_unroll(
             rnd_target_params,
             rnd_state,
             extra_fields=extra_fields,
+            rnd_reward_scale=rnd_reward_scale,
         )
         return (nstate, next_key), transition
 
@@ -306,6 +314,7 @@ def train(
     rnd_hidden_layer_sizes: Sequence[int] = (256, 256),
     rnd_output_size: int = 64,
     rnd_learning_rate: float = 1e-4,
+    rnd_reward_scale: float = 1.0,
     unlock_thresholds: Optional[Sequence[float]] = None,
 ):
     """Train IntrinsicPPO; evaluate breakthroughs on ungated extrinsic returns."""
@@ -470,6 +479,7 @@ def train(
                 training_state.rnd_target_params,
                 training_state.rnd_state,
                 extra_fields=('truncation', 'episode_metrics', 'episode_done'),
+                rnd_reward_scale=rnd_reward_scale,
             )
             return (next_state, next_key), data
 

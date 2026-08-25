@@ -84,14 +84,19 @@ def novelty_reward(
     obs,
     action: jnp.ndarray,
     eps: float = 1e-8,
+    scale: float = 1.0,
 ) -> jnp.ndarray:
-    """Normalized novelty used as the intrinsic PPO reward (no grad)."""
+    """Normalized novelty used as the intrinsic PPO reward (no grad).
+
+    ``scale`` multiplies the std-normalized prediction error (the usual RND
+    coefficient). Default 1.0 leaves the running-std unit scale unchanged.
+    """
     x = _sa_features(obs, action)
     target = module.apply(target_params, x)
     pred = module.apply(rnd_state.predictor_params, x)
     raw = jnp.mean(jnp.square(target - pred), axis=-1)
     std = jnp.sqrt(rnd_state.novelty_var + eps)
-    return jax.lax.stop_gradient(raw / std)
+    return jax.lax.stop_gradient(scale * raw / std)
 
 
 def update_novelty_stats(rnd_state: RNDState, raw: jnp.ndarray) -> RNDState:
