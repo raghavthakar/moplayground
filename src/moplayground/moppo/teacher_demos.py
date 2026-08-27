@@ -55,15 +55,18 @@ def collect_teacher_demos(
 ) -> dict[str, np.ndarray]:
     """Roll a frozen teacher for ``num_steps`` and return demo arrays.
 
-    ``env`` is expected to auto-reset on episode end (BraxAutoResetWrapper), so
-    a single continuous unroll spans many episodes with no manual bookkeeping.
+    ``env`` is a single-env ``mo_wrapper`` stack (VmapWrapper batches one env,
+    so reset takes a batched key of shape ``(1, 2)``). It auto-resets on episode
+    end, so one continuous unroll spans many episodes with no manual bookkeeping.
     """
     pref = np.asarray(preference, dtype=np.float32)
     obs_states: list[np.ndarray] = []
     raw_actions: list[np.ndarray] = []
 
+    step_fn = jax.jit(env.step)
     key = jax.random.PRNGKey(seed)
-    state = env.reset(key)
+    key, reset_key = jax.random.split(key)
+    state = env.reset(jax.random.split(reset_key, 1))
     for _ in range(num_steps):
         key, act_key = jax.random.split(key)
         action, extras = teacher_policy(state.obs, act_key)
@@ -74,7 +77,7 @@ def collect_teacher_demos(
             )
         obs_states.append(_squeeze_batch(np.asarray(state.obs['state'])))
         raw_actions.append(_squeeze_batch(np.asarray(extras['raw_action'])))
-        state = env.step(state, action)
+        state = step_fn(state, action)
 
     obs_arr = np.stack(obs_states, axis=0).astype(np.float32)
     return {

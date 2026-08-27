@@ -60,7 +60,6 @@ def main():
         env,
         episode_length=episode_length,
         action_repeat=int(config.learning_params.base_ppo_params.action_repeat),
-        batch_size=1,
     )
 
     buffer = collect_all_teachers(

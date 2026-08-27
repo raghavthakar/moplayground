@@ -349,7 +349,6 @@ def mo_wrapper(
     episode_length: int = 1000,
     action_repeat: int = 1,
     randomization_fn = None,
-    batch_size: int | None = None,
 ) -> wrapper.Wrapper:
     """Multi-Objective Wrapper"""
 
@@ -362,7 +361,7 @@ def mo_wrapper(
         if threshold_cfg.get('enabled', False):
             thresholds = list(threshold_cfg.thresholds)
 
-    env = VmapWrapper(env, batch_size=batch_size)
+    env = VmapWrapper(env)
     env = MultiObjectiveEpisodeWrapper(env, episode_length, action_repeat)
     if thresholds is not None:
         env = EpisodicThresholdWrapper(env, thresholds)
