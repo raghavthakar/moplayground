@@ -66,6 +66,14 @@ def _unpmap(v):
     return jax.tree_util.tree_map(lambda x: x[0], v)
 
 
+def _uint64_to_float(steps: types.UInt64) -> jnp.ndarray:
+    """Convert a UInt64 step counter to a float32 scalar (jit-safe)."""
+    return (
+        steps.hi.astype(jnp.float32) * jnp.float32(2 ** 32)
+        + steps.lo.astype(jnp.float32)
+    )
+
+
 def _strip_weak_type(tree):
     # brax user code is sometimes ambiguous about weak_type.  in order to
     # avoid extra jit recompilations we strip all weak types from user input
@@ -368,11 +376,12 @@ def train(
     )
 
     def _bc_coef(env_steps: jnp.ndarray) -> jnp.ndarray:
+        # env_steps is a plain float32 scalar (converted from UInt64 upstream).
         if bc_buffer is None or bc_coef <= 0.0:
             return jnp.asarray(0.0, dtype=jnp.float32)
         progress = jnp.minimum(
             1.0,
-            env_steps.astype(jnp.float32) / jnp.asarray(bc_decay_steps, jnp.float32),
+            env_steps / jnp.asarray(bc_decay_steps, jnp.float32),
         )
         return bc_coef + progress * (bc_coef_final - bc_coef)
 
@@ -518,7 +527,7 @@ def train(
                 sgd_step,
                 data=data,
                 normalizer_params=normalizer_params,
-                env_steps=training_state.env_steps,
+                env_steps=_uint64_to_float(training_state.env_steps),
             ),
             (training_state.optimizer_state, training_state.params, key_sgd),
             (),

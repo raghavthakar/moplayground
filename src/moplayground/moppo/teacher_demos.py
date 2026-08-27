@@ -1,9 +1,13 @@
 """Offline demonstration buffers for behavioral cloning into MORLAX.
 
-Frozen exploration policies (e.g. IntrinsicPPO checkpoints) are rolled out on
-the training environment; transitions are tagged with a fixed preference label
+Frozen exploration policies (IntrinsicPPO checkpoints) are rolled out on the
+training environment; transitions are tagged with a fixed preference label
 ``w_label`` that registers where on the MORLAX simplex that behavior should
 live.  The buffer is consumed during MORLAX training as an auxiliary BC loss.
+
+Checkpoint loading goes through ``brax.training.agents.ppo.checkpoint`` so the
+network shape is read from the saved ``ppo_network_config.json`` rather than
+guessed here -- there is exactly one source of truth for a checkpoint's shape.
 """
 
 from __future__ import annotations
@@ -15,7 +19,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from brax.training.agents.ppo import checkpoint as ppo_checkpoint
-from brax.training.agents.ppo import networks as ppo_networks
 from brax.training.types import PRNGKey
 
 
@@ -28,32 +31,18 @@ class TeacherSpec:
     preference: Sequence[float]
 
 
-def load_ppo_teacher_policy(
-    checkpoint_path: str,
-    policy_hidden_layer_sizes: Sequence[int] = (64, 64),
-    value_hidden_layer_sizes: Sequence[int] = (256, 256),
-    deterministic: bool = True,
-):
-    """Load a standard brax PPO teacher and return ``policy(obs, key)``."""
+def load_ppo_teacher_policy(checkpoint_path: str, deterministic: bool = False):
+    """Load a brax PPO teacher as ``policy(obs, key) -> (action, extras)``.
 
-    def network_factory(**kwargs):
-        return ppo_networks.make_ppo_networks(
-            policy_hidden_layer_sizes=policy_hidden_layer_sizes,
-            value_hidden_layer_sizes=value_hidden_layer_sizes,
-            **kwargs,
-        )
-
-    return ppo_checkpoint.load_policy(
-        checkpoint_path,
-        network_factory=network_factory,
-        deterministic=deterministic,
-    )
+    The network shape comes from the checkpoint's saved config. Collection uses
+    the stochastic policy (``deterministic=False``) because BC needs the
+    pre-tanh ``raw_action`` that only the stochastic branch emits.
+    """
+    return ppo_checkpoint.load_policy(checkpoint_path, deterministic=deterministic)
 
 
 def _squeeze_batch(x: np.ndarray) -> np.ndarray:
-    if x.ndim > 1 and x.shape[0] == 1:
-        return x[0]
-    return x
+    return x[0] if x.ndim > 1 and x.shape[0] == 1 else x
 
 
 def collect_teacher_demos(
@@ -61,35 +50,37 @@ def collect_teacher_demos(
     teacher_policy,
     preference: Sequence[float],
     *,
-    num_episodes: int,
-    episode_length: int,
+    num_steps: int,
     seed: int = 0,
 ) -> dict[str, np.ndarray]:
-    """Roll a frozen teacher and return numpy arrays for the demo buffer."""
+    """Roll a frozen teacher for ``num_steps`` and return demo arrays.
+
+    ``env`` is expected to auto-reset on episode end (BraxAutoResetWrapper), so
+    a single continuous unroll spans many episodes with no manual bookkeeping.
+    """
     pref = np.asarray(preference, dtype=np.float32)
     obs_states: list[np.ndarray] = []
     raw_actions: list[np.ndarray] = []
-    directives: list[np.ndarray] = []
 
     key = jax.random.PRNGKey(seed)
     state = env.reset(key)
-    # episode_length is enforced by the training wrapper; unroll until auto-reset.
-    for ep in range(num_episodes):
-        for _ in range(episode_length):
-            key, act_key = jax.random.split(key)
-            action, extras = teacher_policy(state.obs, act_key)
-            obs_state = _squeeze_batch(np.asarray(state.obs['state']))
-            obs_states.append(obs_state)
-            raw_actions.append(_squeeze_batch(np.asarray(extras['raw_action'])))
-            directives.append(pref.copy())
-            state = env.step(state, action)
-            if bool(jnp.all(state.done)):
-                break
+    for _ in range(num_steps):
+        key, act_key = jax.random.split(key)
+        action, extras = teacher_policy(state.obs, act_key)
+        if 'raw_action' not in extras:
+            raise ValueError(
+                'Teacher policy did not emit raw_action; load it with '
+                'deterministic=False so BC targets are available.'
+            )
+        obs_states.append(_squeeze_batch(np.asarray(state.obs['state'])))
+        raw_actions.append(_squeeze_batch(np.asarray(extras['raw_action'])))
+        state = env.step(state, action)
 
+    obs_arr = np.stack(obs_states, axis=0).astype(np.float32)
     return {
-        'observation_state': np.stack(obs_states, axis=0).astype(np.float32),
+        'observation_state': obs_arr,
         'raw_action': np.stack(raw_actions, axis=0).astype(np.float32),
-        'directive': np.stack(directives, axis=0).astype(np.float32),
+        'directive': np.tile(pref, (obs_arr.shape[0], 1)),
     }
 
 
@@ -138,32 +129,22 @@ def collect_all_teachers(
     env,
     teachers: Sequence[TeacherSpec],
     *,
-    num_episodes: int,
-    episode_length: int,
-    policy_hidden_layer_sizes: Sequence[int],
-    value_hidden_layer_sizes: Sequence[int],
+    num_steps: int,
     seed: int = 0,
 ) -> dict[str, np.ndarray]:
-    """Collect and merge demos from every teacher in ``teachers``."""
+    """Collect and merge stochastic demos from every teacher."""
     buffers = []
     for i, teacher in enumerate(teachers):
         print(
             f'Collecting demos for teacher {teacher.name!r} '
             f'at w={list(teacher.preference)} from {teacher.checkpoint}'
         )
-        policy = load_ppo_teacher_policy(
-            teacher.checkpoint,
-            policy_hidden_layer_sizes=policy_hidden_layer_sizes,
-            value_hidden_layer_sizes=value_hidden_layer_sizes,
-            deterministic=True,
-        )
-        policy = jax.jit(policy)
+        policy = jax.jit(load_ppo_teacher_policy(teacher.checkpoint))
         buf = collect_teacher_demos(
             env,
             policy,
             teacher.preference,
-            num_episodes=num_episodes,
-            episode_length=episode_length,
+            num_steps=num_steps,
             seed=seed + i,
         )
         print(f'  -> {buf["observation_state"].shape[0]} transitions')

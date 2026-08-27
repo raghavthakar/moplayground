@@ -19,16 +19,14 @@ from moplayground.moppo.teacher_demos import (
 
 
 def _parse_teachers(distill_cfg) -> list[TeacherSpec]:
-    teachers = []
-    for entry in distill_cfg.get('teachers', []):
-        teachers.append(
-            TeacherSpec(
-                name=entry.get('name', 'teacher'),
-                checkpoint=entry['checkpoint'],
-                preference=list(entry['preference']),
-            )
+    return [
+        TeacherSpec(
+            name=entry.get('name', 'teacher'),
+            checkpoint=entry['checkpoint'],
+            preference=list(entry['preference']),
         )
-    return teachers
+        for entry in distill_cfg.get('teachers', [])
+    ]
 
 
 def main():
@@ -49,21 +47,12 @@ def main():
         raise ValueError('distill_params.enabled must be true in the config.')
 
     teachers = _parse_teachers(distill)
+    if not teachers:
+        raise ValueError('distill_params.teachers is empty.')
+
     num_episodes = args.episodes or int(distill.get('num_episodes', 64))
     episode_length = int(config.learning_params.base_ppo_params.episode_length)
-    teacher_net = distill.get('teacher_network_params', {}) or {}
-    network_params = config.learning_params.morlax_params.network_params
-    default_policy_hidden = (
-        network_params.get('policy_hidden_layer_sizes', (64, 64))
-        if isinstance(network_params, dict)
-        else network_params.policy_hidden_layer_sizes
-    )
-    policy_hidden = tuple(
-        teacher_net.get('policy_hidden_layer_sizes', default_policy_hidden)
-    )
-    value_hidden = tuple(
-        teacher_net.get('value_hidden_layer_sizes', (256, 256))
-    )
+    num_steps = num_episodes * episode_length
 
     mm.utils.setupGPU.run_setup()
     env, _ = mop.envs.create_environment(config, for_training=True)
@@ -77,10 +66,7 @@ def main():
     buffer = collect_all_teachers(
         env,
         teachers,
-        num_episodes=num_episodes,
-        episode_length=episode_length,
-        policy_hidden_layer_sizes=policy_hidden,
-        value_hidden_layer_sizes=value_hidden,
+        num_steps=num_steps,
         seed=int(config.learning_params.base_ppo_params.seed),
     )
     save_demo_buffer(args.output, buffer)

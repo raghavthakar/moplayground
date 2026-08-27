@@ -103,9 +103,6 @@ learning_params:
       bc_coef: 1.0
       bc_coef_final: 0.1
       bc_decay_steps: 10000000
-      teacher_network_params:
-        policy_hidden_layer_sizes: [64, 64]
-        value_hidden_layer_sizes: [256, 256]
       teachers:
         - name: run-balanced-m4
           checkpoint: /nfs/hpc/share/thakarr/SMORL/results/retention_archive/rnd/intrinsic-ppo-hopper-rnd-run0-thr=50x50-iscale=1-seed=0/000021565440
