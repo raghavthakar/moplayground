@@ -94,5 +94,5 @@ learning_params:
       # policy_checkpoint must point at a saved checkpoint dir (…/<step>/); its
       # policy seeds the hypernetwork bias and its normalizer is carried over.
       # The value head is reinitialised.
-      enabled: false
-      policy_checkpoint: ''
+      enabled: true
+      policy_checkpoint: /nfs/stak/users/thakarr/hpc-share/SMORL/results/retention_archive/rnd/intrinsic-ppo-hopper-rnd-run0-thr=50x50-iscale=1-seed=0/000046725120
