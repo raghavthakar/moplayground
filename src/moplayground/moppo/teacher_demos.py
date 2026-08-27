@@ -14,8 +14,8 @@ from typing import Sequence
 import jax
 import jax.numpy as jnp
 import numpy as np
+from brax.training.agents.ppo import checkpoint as ppo_checkpoint
 from brax.training.agents.ppo import networks as ppo_networks
-from brax.training.checkpoint import get_network, load, load_config
 from brax.training.types import PRNGKey
 
 
@@ -35,8 +35,6 @@ def load_ppo_teacher_policy(
     deterministic: bool = True,
 ):
     """Load a standard brax PPO teacher and return ``policy(obs, key)``."""
-    params_config = load_config(checkpoint_path)
-    normalizer_params, policy_params, _value_params = load(checkpoint_path)
 
     def network_factory(**kwargs):
         return ppo_networks.make_ppo_networks(
@@ -45,10 +43,9 @@ def load_ppo_teacher_policy(
             **kwargs,
         )
 
-    ppo_net = get_network(params_config, network_factory)
-    make_policy = ppo_networks.make_inference_fn(ppo_net)
-    return make_policy(
-        (normalizer_params, policy_params),
+    return ppo_checkpoint.load_policy(
+        checkpoint_path,
+        network_factory=network_factory,
         deterministic=deterministic,
     )
 
