@@ -217,31 +217,67 @@ def train_policy(
     )
     opt = env.params.reward.optimization
     # Prefer human-readable labels when present; fall back to objective ids.
+    from moplayground.moppo.archive import ExtrinsicArchive
+
     plot_labels = (
         list(opt.labels)
         if hasattr(opt, 'labels') and opt.labels is not None
         else list(opt.objectives)
     )
+    thr_cfg = config.env_config.reward.get('episodic_threshold', None)
+    thresholds = None
+    if thr_cfg is not None and thr_cfg.get('enabled', False):
+        thresholds = list(thr_cfg.thresholds)
     training_data = mop.utils.plotting.MOTrainingPlottingInfo(
         start_time = time.time(),
         labels = plot_labels,
+        thresholds = list(thresholds) if thresholds is not None else [],
     )
-        
-    train_fn = functools.partial(
-        train_fn,
-        progress_fn=lambda num_steps, metrics: progress_fn(
+    archive = (
+        ExtrinsicArchive(thresholds, output_dir, plot_labels)
+        if thresholds is not None
+        else None
+    )
+
+    def _progress(num_steps, metrics):
+        if archive is not None and 'reward' in metrics:
+            n_new = archive.ingest(num_steps, metrics['reward'])
+            archive.annotate(metrics)
+            archive.save_csv(output_dir / 'archive.csv')
+            archive.attach_checkpoint(
+                num_steps, output_dir / f'{int(num_steps):012d}'
+            )
+            if n_new:
+                print(
+                    f'Archive: +{n_new} at step {int(num_steps)} '
+                    f'(size={archive.size}, hv={metrics.get("archive/hypervolume")})'
+                )
+        progress_fn(
             run             = run,
             num_steps       = num_steps,
             metrics         = metrics,
             save_dir        = output_dir,
             training_data   = training_data
-        ),
-        policy_params_fn=functools.partial(
-            mm.utils.logging.save_model,
-            output_dir        = output_dir,
-            run               = run,
-            network_config    = network_config
-        ),
+        )
+
+    def _save_policy(current_step, make_policy, params):
+        mm.utils.logging.save_model(
+            current_step,
+            make_policy,
+            params,
+            network_config,
+            output_dir=output_dir,
+            run=run,
+        )
+        if archive is not None:
+            archive.attach_checkpoint(
+                current_step, output_dir / f'{int(current_step):012d}'
+            )
+
+    train_fn = functools.partial(
+        train_fn,
+        progress_fn=_progress,
+        policy_params_fn=_save_policy,
     )
     
     # Start training

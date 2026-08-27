@@ -22,6 +22,8 @@ class MOTrainingPlottingInfo:
     paretos       : list = field(default_factory=list)
     directives    : list = field(default_factory=list)
     labels        : list = field(default_factory=list)
+    archive_paretos : list = field(default_factory=list)
+    thresholds    : list = field(default_factory=list)
     
     def save(self, save_dir, create_time=True):
         pd.DataFrame(
@@ -169,6 +171,7 @@ def _log_mo_wandb(
         if isinstance(key, str) and (
             key.startswith('training/')
             or key.startswith('eval/')
+            or key.startswith('archive/')
             or key.endswith('_loss')
             or key in ('total_loss', 'policy_loss', 'v_loss', 'entropy_loss')
         ):
@@ -201,6 +204,13 @@ def plot_mo_progress(
     training_data.times.append(time.time())
     training_data.save(save_dir / 'progress.csv')
 
+    archive_rewards = None
+    if 'archive_reward' in metrics:
+        archive_rewards = _as_numpy(metrics['archive_reward'])
+        if archive_rewards.ndim == 1:
+            archive_rewards = archive_rewards[None, :]
+        training_data.archive_paretos.append(archive_rewards)
+
     if np.array(training_data.directives).shape[2] == 2:
         # create the plot
         fig, axs = plot_sequential_paretos(
@@ -218,6 +228,21 @@ def plot_mo_progress(
     # save and upload to wandb
     fig.savefig(save_dir / 'progress.svg')
     plt.close(fig)
+
+    archive_svg = None
+    if training_data.archive_paretos:
+        afig, _ = plot_sequential_archive_paretos(
+            ax_titles=training_data.iterations,
+            paretos=training_data.archive_paretos,
+            objectives=training_data.labels,
+            thresholds=training_data.thresholds or None,
+        )
+        afig.savefig(save_dir / 'archive_progress.svg')
+        plt.close(afig)
+        if run:
+            with open(save_dir / 'archive_progress.svg', 'r') as f:
+                archive_svg = f.read()
+
     if run:
         with open(save_dir / 'progress.svg', "r") as f:
             svg = f.read()
@@ -230,7 +255,7 @@ def plot_mo_progress(
             directives=directives,
             labels=training_data.labels,
             elapsed_s=elapsed_s,
-            reward_plot_html=svg,
+            reward_plot_html=archive_svg if archive_svg is not None else svg,
         )
 
 def default_coloring(tradeoff):
@@ -311,6 +336,71 @@ def plot_pareto(
         ax.set_zlabel(objective[2])
 
     return ax
+
+
+def plot_sequential_archive_paretos(
+    ax_titles,
+    paretos,
+    objectives=None,
+    thresholds=None,
+):
+    """Sequential 2D fronts for an archive whose size grows over evals."""
+    n = len(ax_titles)
+    if objectives is None:
+        objectives = [''] * 2
+    nrows, ncols = get_subplot_grid(n)
+    fig, axs = plt.subplots(nrows=nrows, ncols=ncols)
+    if type(axs) == np.ndarray:
+        axs = axs.flatten()
+    else:
+        axs = [axs]
+
+    pts = []
+    for p in paretos:
+        arr = np.asarray(p, dtype=float)
+        if arr.ndim == 1:
+            arr = arr[None, :]
+        if arr.size:
+            pts.append(arr)
+    if pts:
+        all_pts = np.concatenate(pts, axis=0)
+        xlim = np.array((np.min(all_pts[:, 0]), np.max(all_pts[:, 0])), dtype=float)
+        ylim = np.array((np.min(all_pts[:, 1]), np.max(all_pts[:, 1])), dtype=float)
+    else:
+        xlim = np.array([-1.0, 1.0])
+        ylim = np.array([-1.0, 1.0])
+    if thresholds is not None and len(thresholds) >= 2:
+        xlim[0] = min(xlim[0], 0.0, float(thresholds[0]))
+        ylim[0] = min(ylim[0], 0.0, float(thresholds[1]))
+        xlim[1] = max(xlim[1], float(thresholds[0]))
+        ylim[1] = max(ylim[1], float(thresholds[1]))
+    pad_x = 0.1 * max(xlim[1] - xlim[0], 1.0)
+    pad_y = 0.1 * max(ylim[1] - ylim[0], 1.0)
+    xlim = xlim + np.array([-pad_x, pad_x])
+    ylim = ylim + np.array([-pad_y, pad_y])
+
+    for ax, title, front in zip(axs, ax_titles, paretos):
+        front = np.asarray(front, dtype=float)
+        if front.ndim == 1:
+            front = front[None, :]
+        ax.set_title(title)
+        ax.set_xlim(xlim)
+        ax.set_ylim(ylim)
+        ax.set_xlabel(objectives[0] if len(objectives) > 0 else '')
+        ax.set_ylabel(objectives[1] if len(objectives) > 1 else '')
+        if thresholds is not None and len(thresholds) >= 2:
+            ax.axvline(float(thresholds[0]), color='0.6', ls='--', lw=0.8)
+            ax.axhline(float(thresholds[1]), color='0.6', ls='--', lw=0.8)
+        if front.size == 0:
+            ax.text(0.5, 0.5, 'empty', transform=ax.transAxes, ha='center', va='center')
+            continue
+        plot_pareto(ax, front, colors='#4C78A8', objective=objectives, set_lims=False)
+
+    for ax in axs[n:]:
+        ax.set_visible(False)
+    fig.set_size_inches((4 * ncols, 4 * nrows))
+    fig.tight_layout()
+    return fig, axs
 
 def plot_sequential_paretos(
     ax_titles: list[str],
