@@ -158,6 +158,24 @@ def make_morlax_networks(
 
     if target_policy_params is None:
         target_policy_params = policy_network.init(key)
+    else:
+        # Warm start: the provided policy must match the MORLAX actor exactly,
+        # otherwise the hypernetwork bias is seeded with the wrong shapes.
+        ref_shapes = sorted(
+            tuple(x.shape) for x in jax.tree_util.tree_leaves(policy_network.init(key))
+        )
+        got_shapes = sorted(
+            tuple(jnp.asarray(x).shape)
+            for x in jax.tree_util.tree_leaves(target_policy_params)
+        )
+        if ref_shapes != got_shapes:
+            raise ValueError(
+                'Warm-start policy is incompatible with the MORLAX actor.\n'
+                f'  expected leaf shapes: {ref_shapes}\n'
+                f'  got leaf shapes:      {got_shapes}\n'
+                'Check that policy_hidden_layer_sizes and the action size match '
+                'the exploration policy.'
+            )
     if target_value_params is None:
         target_value_params = value_network.init(key)
 

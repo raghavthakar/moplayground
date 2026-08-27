@@ -90,5 +90,9 @@ learning_params:
       policy_hidden_layer_sizes: [64, 64]
       value_hidden_layer_sizes:  [64, 64]
     warmup_params:
+      # Warm start the hypernetwork from an exploration checkpoint. When enabled,
+      # policy_checkpoint must point at a saved checkpoint dir (…/<step>/); its
+      # policy seeds the hypernetwork bias and its normalizer is carried over.
+      # The value head is reinitialised.
       enabled: false
-      policy: results/MOHopper-as-so/warm-start/test/config.yaml
+      policy_checkpoint: ''
