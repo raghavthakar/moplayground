@@ -43,6 +43,7 @@ import optax
 from moplayground.moppo import acting
 from moplayground.moppo import factory
 from moplayground.moppo import losses
+from moplayground.moppo.teacher_demos import sample_bc_batch
 
 
 InferenceParams = Tuple[running_statistics.NestedMeanStd, Params]
@@ -270,6 +271,12 @@ def train(
     restore_params          : Optional[Any] = None,
     restore_value_fn        : bool = True,
     run_evals               : bool = True,
+    # behavioral cloning from offline teacher demos
+    bc_buffer               : Optional[Mapping[str, Any]] = None,
+    bc_batch_size           : int = 256,
+    bc_coef                 : float = 0.0,
+    bc_coef_final           : float = 0.0,
+    bc_decay_steps          : int = 10_000_000,
 ):
     assert batch_size * num_minibatches % num_envs == 0
     xt = time.time()
@@ -360,9 +367,19 @@ def train(
         normalize_advantage = normalize_advantage,
     )
 
-    gradient_update_fn = gradients.gradient_update_fn(
-        loss_fn, optimizer, pmap_axis_name=_PMAP_AXIS_NAME, has_aux=True
-    )
+    def _bc_coef(env_steps: jnp.ndarray) -> jnp.ndarray:
+        if bc_buffer is None or bc_coef <= 0.0:
+            return jnp.asarray(0.0, dtype=jnp.float32)
+        progress = jnp.minimum(
+            1.0,
+            env_steps.astype(jnp.float32) / jnp.asarray(bc_decay_steps, jnp.float32),
+        )
+        return bc_coef + progress * (bc_coef_final - bc_coef)
+
+    if bc_buffer is None:
+        gradient_update_fn = gradients.gradient_update_fn(
+            loss_fn, optimizer, pmap_axis_name=_PMAP_AXIS_NAME, has_aux=True
+        )
 
     metrics_aggregator = metric_logger.EpisodeMetricsLogger(
         steps_between_logging=training_metrics_steps
@@ -374,10 +391,28 @@ def train(
         carry,
         data: acting.MultiObjectiveTransition,
         normalizer_params: running_statistics.RunningStatisticsState,
+        env_steps: jnp.ndarray,
     ):
         optimizer_state, params, key = carry
-        key, key_loss = jax.random.split(key)
-        (_, metrics), params, optimizer_state = gradient_update_fn(
+        key, key_loss, key_bc = jax.random.split(key, 3)
+
+        step_loss_fn = loss_fn
+        if bc_buffer is not None:
+            bc_batch = sample_bc_batch(key_bc, bc_buffer, bc_batch_size)
+            step_loss_fn = functools.partial(
+                loss_fn,
+                bc_observation=bc_batch['observation'],
+                bc_raw_actions=bc_batch['raw_action'],
+                bc_directive=bc_batch['directive'],
+                bc_coef=_bc_coef(env_steps),
+            )
+            grad_update = gradients.gradient_update_fn(
+                step_loss_fn, optimizer, pmap_axis_name=_PMAP_AXIS_NAME, has_aux=True
+            )
+        else:
+            grad_update = gradient_update_fn
+
+        (_, metrics), params, optimizer_state = grad_update(
             params,
             normalizer_params,
             data,
@@ -392,6 +427,7 @@ def train(
         unused_t,
         data: acting.MultiObjectiveTransition,
         normalizer_params: running_statistics.RunningStatisticsState,
+        env_steps: jnp.ndarray,
     ):
         optimizer_state, params, key = carry
         key, key_perm, key_grad = jax.random.split(key, 3)
@@ -403,7 +439,11 @@ def train(
 
         shuffled_data = jax.tree_util.tree_map(convert_data, data)
         (optimizer_state, params, _), metrics = jax.lax.scan(
-            functools.partial(minibatch_step, normalizer_params=normalizer_params),
+            functools.partial(
+                minibatch_step,
+                normalizer_params=normalizer_params,
+                env_steps=env_steps,
+            ),
             (optimizer_state, params, key_grad),
             shuffled_data,
             length=num_minibatches,
@@ -475,7 +515,10 @@ def train(
         )
         (optimizer_state, params, _), metrics = jax.lax.scan(
             functools.partial(
-                sgd_step, data=data, normalizer_params=normalizer_params
+                sgd_step,
+                data=data,
+                normalizer_params=normalizer_params,
+                env_steps=training_state.env_steps,
             ),
             (training_state.optimizer_state, training_state.params, key_sgd),
             (),
