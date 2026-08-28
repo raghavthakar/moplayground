@@ -1,21 +1,20 @@
 #!/bin/bash
-#SBATCH --time=0-04:00:00
+#SBATCH --time=0-01:00:00
 #SBATCH --partition=dgxh,ampere
 #SBATCH --mem=32G
 #SBATCH -c 12
 #SBATCH -G 1
-#SBATCH --job-name=MORLAX-sparse-BC
-#SBATCH --output=MORLAX-sparse-BC_%j.out
+#SBATCH --job-name=MORLAX-bc-probe
+#SBATCH --output=MORLAX-bc-probe_%j.out
 
-# Sparse MOHopper MORLAX + offline BC transfer validation (50x50 trap).
-# Collects teacher demos once, then trains with morlax_mohopper_sparse_bc.yaml.
+# Sparse MOHopper behavior-cloning transfer probe (50x50 trap).
+# Collects teacher demos once, then runs a standalone BC probe: a cold MORLAX
+# hypernetwork is trained purely by supervised BC on the demo buffer (no PPO)
+# and evaluated on the ungated env at each teacher's labeled preference.
 #
 # Submit:
 #   sbatch scripts/slurm/morlax_mohopper_sparse_bc.sh
-#   RUN_NAME=morlax-bc-thr50-seed0 sbatch scripts/slurm/morlax_mohopper_sparse_bc.sh
-#
-# Optional sweep over BC anchor strength (array index -> bc_coef):
-#   BC_COEF=2.0 BC_COEF_FINAL=0.2 RUN_NAME=morlax-bc-lam2-seed0 sbatch ...
+#   BC_STEPS=30000 BC_LR=5e-4 sbatch scripts/slurm/morlax_mohopper_sparse_bc.sh
 
 set -euo pipefail
 
@@ -23,7 +22,9 @@ ENV_DIR=/nfs/hpc/share/thakarr/SMORL
 CODE_DIR=/nfs/hpc/share/thakarr/SMORL/moplayground
 CONFIG=config/morlax/mohopper_sparse_bc.yaml
 DEMO_BUFFER=/nfs/hpc/share/thakarr/SMORL/data/mohopper_sparse_bc_demos.npz
-RUN_NAME="${RUN_NAME:-morlax-bc-thr50-seed0}"
+BC_STEPS="${BC_STEPS:-20000}"
+BC_BATCH="${BC_BATCH:-512}"
+BC_LR="${BC_LR:-1e-3}"
 
 module load conda
 source activate base
@@ -33,7 +34,6 @@ cd "${CODE_DIR}"
 export PYTHONPATH="${CODE_DIR}/src${PYTHONPATH:+:${PYTHONPATH}}"
 export CUDA_VISIBLE_DEVICES=0
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
-unset WANDB_MODE
 
 mkdir -p "$(dirname "${DEMO_BUFFER}")"
 
@@ -46,6 +46,6 @@ else
   echo "Reusing existing demo buffer: ${DEMO_BUFFER}"
 fi
 
-export SMORL_RUN_NAME="${RUN_NAME}"
-echo "Training run: ${RUN_NAME}"
-"${ENV_DIR}/bin/python" -m scripts.train "${CONFIG}" --name "${RUN_NAME}"
+echo "Running BC probe (steps=${BC_STEPS} batch=${BC_BATCH} lr=${BC_LR})"
+"${ENV_DIR}/bin/python" -m scripts.bc_probe "${CONFIG}" \
+  --steps "${BC_STEPS}" --batch "${BC_BATCH}" --lr "${BC_LR}"

@@ -1,23 +1,24 @@
-# Behavioral-cloning transfer validation on sparse MOHopper (50x50 trap).
+# Behavioral-cloning transfer probe on sparse MOHopper (50x50 trap).
 #
-# Experiment question: can frozen IntrinsicPPO teachers transfer *behavior*
-# into a cold-started MORLAX hypernetwork (no parameter warm-start), and does
-# an offline BC tether prevent the run-skill collapse seen after warm-start?
+# Experiment question: can frozen IntrinsicPPO teachers transfer *behavior* into
+# a cold-started MORLAX hypernetwork (no parameter warm-start)? BC is isolated
+# from PPO to answer this cleanly.
 #
 # Pipeline:
-#   1. scripts/collect_teacher_demos.py rolls frozen archive teachers on the
-#      gated train env and saves (obs, raw_action, w_label) to demo_buffer.
-#   2. scripts.train runs standard sparse-heavytail MORLAX PPO with an auxiliary
-#      BC loss: L = L_PPO + λ(t) · E[-log π_MORLAX(a_teacher|s, w_label)].
-#      w_label is fixed per teacher (never sampled for BC).
+#   1. scripts/collect_teacher_demos.py rolls frozen archive teachers and saves
+#      (obs, raw_action, w_label) to demo_buffer. w_label is fixed per teacher.
+#   2. scripts/bc_probe.py trains a cold MORLAX hypernetwork with a pure
+#      supervised BC loss  E[-log pi(a_teacher | s, w_label)]  (no PPO), then
+#      evaluates it on the ungated env at each teacher's labeled preference.
 #
 # Teachers (RND seed0 retention archive, thr=50x50):
 #   member 4  -> w=[1, 0]   run specialist
 #   member 9  -> w=[0, 1]   jump specialist
 #   member 11 -> w=[0.5,0.5] balanced breakthrough
 #
-# Success criterion vs morlax-warm-m11-thr50-seed0: forward eval stays above the
-# 50 gate through the first ~10M steps while jump still densifies.
+# Success criterion: at w=[1,0] the hypernet reproduces the run teacher's Forward
+# Distance and at w=[0,1] the jump teacher's Jump Height -- distinct behaviors at
+# distinct preferences, which a single warm-start policy cannot represent.
 name: morlax-hopper-sparse-bc-run0
 save_dir: /nfs/hpc/share/thakarr/SMORL/results/morlax_hopper_sparse_bc
 description: 'Sparse MORLAX + offline BC from RND archive teachers (50x50 trap)'
@@ -99,10 +100,6 @@ learning_params:
       enabled: true
       demo_buffer: /nfs/hpc/share/thakarr/SMORL/data/mohopper_sparse_bc_demos.npz
       num_episodes: 64
-      bc_batch_size: 256
-      bc_coef: 1.0
-      bc_coef_final: 0.1
-      bc_decay_steps: 10000000
       teachers:
         - name: run-balanced-m4
           checkpoint: /nfs/hpc/share/thakarr/SMORL/results/retention_archive/rnd/intrinsic-ppo-hopper-rnd-run0-thr=50x50-iscale=1-seed=0/000021565440
