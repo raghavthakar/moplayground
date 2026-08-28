@@ -89,7 +89,3 @@ learning_params:
       num_features: 16
       policy_hidden_layer_sizes: [64, 64]
       value_hidden_layer_sizes:  [64, 64]
-    warmup_params:
-      # Optional parameter warm-start (disabled for naive sparse sweeps).
-      enabled: false
-      policy_checkpoint: ''

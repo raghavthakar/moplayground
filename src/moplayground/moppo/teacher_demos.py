@@ -3,7 +3,7 @@
 Frozen exploration policies (IntrinsicPPO checkpoints) are rolled out on the
 training environment; transitions are tagged with a fixed preference label
 ``w_label`` that registers where on the MORLAX simplex that behavior should
-live.  The buffer is consumed by the standalone BC probe (scripts/bc_probe.py).
+live.  The buffer seeds BC-based transfer into the MORLAX hypernetwork.
 
 Checkpoint loading goes through ``brax.training.agents.ppo.checkpoint`` so the
 network shape is read from the saved ``ppo_network_config.json`` rather than

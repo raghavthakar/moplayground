@@ -33,30 +33,6 @@ def setup_morlax(config):
     
     train_fn_params = dict(general_ppo_params) | dict(morlax_algo_params)
 
-    # Optional warm start: seed the hypernetwork from an exploration checkpoint.
-    # The policy params become the hypernetwork bias (every preference starts as
-    # this policy) and the normalizer is carried so observations match. The value
-    # head is intentionally reinitialised (an explorer's value predicts novelty,
-    # not task return, and may not even share the MORLAX value shape).
-    warmup = config.learning_params.morlax_params.get('warmup_params', None)
-    if warmup is not None and warmup.get('enabled', False):
-        ckpt_path = warmup.get('policy_checkpoint', None)
-        if not ckpt_path:
-            raise ValueError(
-                "morlax_params.warmup_params.enabled is true but "
-                "'policy_checkpoint' is unset."
-            )
-        from brax.training import checkpoint as brax_checkpoint
-        normalizer_params, policy_params, _value_params = brax_checkpoint.load(
-            ckpt_path
-        )
-        train_fn_params['init_policy_params'] = policy_params
-        train_fn_params['init_normalizer_params'] = normalizer_params
-        print(
-            f'MORLAX warm start from {ckpt_path}: seeding policy + normalizer '
-            '(value head reinitialised).'
-        )
-
     network_factory = functools.partial(
         factory.make_morlax_networks,
         **network_params

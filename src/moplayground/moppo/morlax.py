@@ -248,9 +248,6 @@ def train(
     network_factory: types.NetworkFactory[
         factory.MORLAXNetworks
     ]                       = factory.make_morlax_networks,
-    init_policy_params      : dict = None,
-    init_normalizer_params  : dict = None,
-    init_value_params       : dict = None,
     seed                    : int = 0,
     use_pmap_on_reset       : bool = True,
     # eval
@@ -334,8 +331,6 @@ def train(
         action_size                = env.action_size,
         num_objectives             = num_objectives,
         preprocess_observations_fn = normalize,
-        target_policy_params       = init_policy_params,
-        target_value_params        = init_value_params
     )
     hypernetwork_inference_fn = factory.make_hypernetwork_inference_fn(
         morlax_networks
@@ -544,14 +539,11 @@ def train(
     obs_shape = jax.tree_util.tree_map(
         lambda x: specs.Array(x.shape[-1:], jnp.dtype('float32')), env_state.obs
     )
-    if init_normalizer_params is None:
-        init_normalizer_params = running_statistics.init_state(
-            obs_shape
-        )
+    normalizer_params = running_statistics.init_state(obs_shape)
     training_state = MOTrainingState(  # pytype: disable=wrong-arg-types  # jax-ndarray
         optimizer_state=optimizer.init(init_params),  # pytype: disable=wrong-arg-types  # numpy-scalars
         params=init_params,
-        normalizer_params=init_normalizer_params,
+        normalizer_params=normalizer_params,
         env_steps=types.UInt64(hi=0, lo=0),
     )
 
