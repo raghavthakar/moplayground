@@ -1,0 +1,116 @@
+# Single-run BC migration on sparse MOHopper (50x50 trap).
+#
+# One 50M sample budget is split into two phases of the SAME run:
+#   1. Exploration (explore_steps): IntrinsicPPO maximizes RND novelty and
+#      records an unlock archive of extrinsic (run, jump) return vectors.
+#   2. Migration: a subset of that Pareto archive is behavior-cloned into a cold
+#      MORLAX hypernetwork. Each teacher's preference is read from its POSITION
+#      on the Pareto front (objective vector normalized to the simplex).
+#   3. Finetuning (finetune_steps): standard MORLAX trains for the rest of the
+#      budget, its policy initialized from the BC hypernetwork. MORLAX is
+#      unchanged; the only hook is morlax.train(init_hypernetwork_params=...).
+#
+# Run:  python -m scripts.train_migration config/morlax/mohopper_sparse_migration.yaml
+# Baselines to compare against (same 50M budget): cold MORLAX (mohopper_sparse).
+name: morlax-hopper-sparse-migrate-run0
+save_dir: /nfs/hpc/share/thakarr/SMORL/results/morlax_hopper_sparse_migrate
+description: 'Explore(IntrinsicPPO)->BC->finetune(MORLAX) on sparse MOHopper (50x50)'
+algorithm: migration
+env: MOHopper
+backend: np
+mo2so:
+  enabled: false
+  weighting: [0.5, 0.5]
+env_config:
+  ctrl_dt: 0.01
+  sim_dt: 0.005
+  action_scale: 3.0
+  history_length: 5
+  ideal_base_height: 0.5
+  ideal_base_vel: 0.5
+  min_base_height: 0.3
+  add_random_joint_state: false
+  add_random_pitch: false
+  reward:
+    weights:
+      run:        1.5
+      jump:       12.0
+      ctrl_cost: -0.0002
+      alive:      1.0
+      upright:    4.0
+      done:       0
+    sigmas:
+      height:     0.01
+      speed:      0.01
+      energy:     0.1
+      imitation:  0.03
+    optimization:
+      objectives:        [['run'], ['jump']]
+      shared_objectives: []
+      labels:            ['Forward Distance', 'Jump Height']
+    episodic_threshold:
+      enabled: true
+      thresholds: [50.0, 50.0]
+  termination:
+    enabled: true
+    base_height: 0.2
+learning_params:
+  # Shared PPO knobs. learning_rate here is the MORLAX finetune rate; the
+  # explorer overrides it below. num_timesteps is informational -- the migration
+  # driver sets each phase's budget from migration_params.{explore,finetune}_steps.
+  base_ppo_params:
+    action_repeat: 1
+    batch_size: 32
+    clipping_epsilon: 0.2
+    deterministic_eval: true
+    discounting: 0.99
+    entropy_cost: 0.01
+    episode_length: 500
+    learning_rate: 0.000005
+    max_grad_norm: 1.0
+    normalize_observations: true
+    num_envs: 1024
+    num_evals: 15
+    num_minibatches: 32
+    num_timesteps: 50000000
+    num_updates_per_batch: 4
+    reward_scaling: 1.0
+    seed: 0
+    unroll_length: 30
+  # Phase 1: IntrinsicPPO explorer (PPO on RND novelty).
+  intrinsic_ppo_params:
+    train_fn_params:
+      learning_rate: 0.0003
+    network_params:
+      policy_hidden_layer_sizes: [64, 64]
+      value_hidden_layer_sizes: [256, 256]
+    rnd_params:
+      hidden_layer_sizes: [256, 256]
+      output_size: 64
+      learning_rate: 0.0001
+      scale: 1.0
+  # Phase 2: MORLAX finetuner (unchanged; only its policy init is BC-seeded).
+  morlax_params:
+    train_fn_params:
+      alpha: 1.0
+      k: 8
+      sampling: sparse-heavytail
+      warmup_frac: 0.0
+    network_params:
+      hypertype: dual
+      hypersize: [128, 128]
+      num_features: 16
+      policy_hidden_layer_sizes: [64, 64]
+      value_hidden_layer_sizes:  [64, 64]
+# Budget split + teacher selection + BC hyperparameters for the bridge.
+migration_params:
+  explore_steps: 10000000
+  finetune_steps: 40000000
+  selection: nondominated   # 'nondominated' | 'all'
+  max_teachers: 0           # 0 = keep all selected; else spread this many along the front
+  demos:
+    num_episodes: 64        # teacher rollout episodes per selected policy
+  bc:
+    steps: 6000
+    batch_size: 512
+    lr: 0.0003

@@ -248,6 +248,7 @@ def train(
     network_factory: types.NetworkFactory[
         factory.MORLAXNetworks
     ]                       = factory.make_morlax_networks,
+    init_hypernetwork_params: dict = None,
     seed                    : int = 0,
     use_pmap_on_reset       : bool = True,
     # eval
@@ -532,8 +533,15 @@ def train(
         return training_state, env_state, metrics  # pytype: disable=bad-return-type  # py311-upgrade
 
     # Initialize model params and training state.
+    # Policy init: a BC-pretrained hypernetwork (behavioral migration) when
+    # provided, otherwise the usual random init. This is the only migration hook
+    # in MORLAX -- training itself is unchanged.
     init_params = losses.MORLAXNetworkParams(
-        hypernetwork = morlax_networks.hypernetwork.init(key_policy),
+        hypernetwork = (
+            init_hypernetwork_params
+            if init_hypernetwork_params is not None
+            else morlax_networks.hypernetwork.init(key_policy)
+        ),
     )
 
     obs_shape = jax.tree_util.tree_map(

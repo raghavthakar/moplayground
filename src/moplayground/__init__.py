@@ -67,6 +67,7 @@ _EXPORTS = {
 
     # --- learning --------------------------------------------------------
     'train_policy': 'moplayground.learning.training',
+    'train_migration': 'moplayground.learning.migration',
     'setup_morlax': 'moplayground.learning.training',
     'setup_amor': 'moplayground.learning.training',
     'create_training_directory': 'moplayground.learning.training',
