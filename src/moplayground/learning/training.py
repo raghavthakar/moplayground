@@ -57,31 +57,6 @@ def setup_morlax(config):
             '(value head reinitialised).'
         )
 
-    distill = config.learning_params.morlax_params.get('distill_params', None)
-    if distill is not None and distill.get('enabled', False):
-        demo_buffer_path = distill.get('demo_buffer')
-        if not demo_buffer_path:
-            raise ValueError(
-                "morlax_params.distill_params.enabled is true but "
-                "'demo_buffer' is unset."
-            )
-        from moplayground.moppo.teacher_demos import (
-            demo_buffer_to_jax,
-            load_demo_buffer,
-        )
-        bc_buffer = demo_buffer_to_jax(load_demo_buffer(demo_buffer_path))
-        train_fn_params['bc_buffer'] = bc_buffer
-        train_fn_params['bc_batch_size'] = int(distill.get('bc_batch_size', 256))
-        train_fn_params['bc_coef'] = float(distill.get('bc_coef', 1.0))
-        train_fn_params['bc_coef_final'] = float(distill.get('bc_coef_final', 0.1))
-        train_fn_params['bc_decay_steps'] = int(
-            distill.get('bc_decay_steps', 10_000_000)
-        )
-        print(
-            f'MORLAX BC from {demo_buffer_path}: '
-            f'{int(bc_buffer["raw_action"].shape[0])} demo transitions.'
-        )
-
     network_factory = functools.partial(
         factory.make_morlax_networks,
         **network_params

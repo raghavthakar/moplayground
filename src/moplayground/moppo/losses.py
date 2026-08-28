@@ -112,10 +112,6 @@ def compute_morlax_loss(
     gae_lambda          : float = 0.95,
     clipping_epsilon    : float = 0.3,
     normalize_advantage : bool = True,
-    bc_observation      : dict | None = None,
-    bc_raw_actions      : jnp.ndarray | None = None,
-    bc_directive        : jnp.ndarray | None = None,
-    bc_coef             : float = 0.0,
 ) -> Tuple[jnp.ndarray, types.Metrics]:
     """Computes PPO loss.
 
@@ -204,50 +200,12 @@ def compute_morlax_loss(
     entropy_loss = entropy_cost * -entropy
 
     total_loss = policy_loss + v_loss + entropy_loss
-    metrics = {
+
+    return total_loss, {
         'total_loss'   : total_loss,
         'policy_loss'  : policy_loss,
         'v_loss'       : v_loss,
         'entropy_loss' : entropy_loss,
-    }
-
-    if bc_observation is not None:
-        bc_loss, bc_metrics = compute_morlax_bc_loss(
-            params=params,
-            normalizer_params=normalizer_params,
-            observation=bc_observation,
-            raw_actions=bc_raw_actions,
-            directive=bc_directive,
-            morlax_networks=morlax_networks,
-        )
-        total_loss = total_loss + bc_coef * bc_loss
-        metrics.update(bc_metrics)
-        metrics['total_loss'] = total_loss
-        metrics['bc_coef'] = bc_coef
-
-    return total_loss, metrics
-
-
-def compute_morlax_bc_loss(
-    params: MORLAXNetworkParams,
-    normalizer_params: Any,
-    observation: dict,
-    raw_actions: jnp.ndarray,
-    directive: jnp.ndarray,
-    morlax_networks: factory.MORLAXNetworks,
-) -> Tuple[jnp.ndarray, dict]:
-    """Negative log-likelihood of teacher actions under the MORLAX hypernet."""
-    parametric_action_distribution = morlax_networks.parametric_action_distribution
-    policy_apply = morlax_networks.policy_network.apply
-    policy_params, _value_params = morlax_networks.hypernetwork.apply(
-        params.hypernetwork, directive
-    )
-    policy_logits = policy_apply(normalizer_params, policy_params, observation)
-    log_prob = parametric_action_distribution.log_prob(policy_logits, raw_actions)
-    bc_loss = -jnp.mean(log_prob)
-    return bc_loss, {
-        'bc_loss': bc_loss,
-        'bc_log_prob': jnp.mean(log_prob),
     }
 
 
