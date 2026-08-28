@@ -211,7 +211,7 @@ def compute_morlax_loss(
         'entropy_loss' : entropy_loss,
     }
 
-    if bc_coef > 0.0 and bc_observation is not None:
+    if bc_observation is not None:
         bc_loss, bc_metrics = compute_morlax_bc_loss(
             params=params,
             normalizer_params=normalizer_params,
