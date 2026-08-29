@@ -42,6 +42,7 @@ def pretrain_hypernetwork(
     lr: float,
     seed: int = 0,
     log_every: int = 1000,
+    run=None,
 ):
     """Supervised-BC a MORLAX hypernetwork on ``buffer``; return its params.
 
@@ -77,5 +78,8 @@ def pretrain_hypernetwork(
         key, sub = jax.random.split(key)
         params, opt_state, loss = train_step(params, opt_state, sub)
         if step == 1 or step % log_every == 0 or step == steps:
-            print(f'  [bc {step}/{steps}] loss={float(loss):.4f}')
+            loss_f = float(loss)
+            print(f'  [bc {step}/{steps}] loss={loss_f:.4f}')
+            if run is not None:
+                run.log({'bc/loss': loss_f}, step=step)
     return params

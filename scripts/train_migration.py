@@ -35,11 +35,17 @@ print(f"Results dir: {config['save_dir']}/{config['name']}")
 env, _ = mop.envs.create_environment(config, for_training=True)
 eval_env, _ = mop.envs.create_environment(config, for_training=True)
 
-name = config['save_dir'] + '/' + config['name']
-run = mm.utils.logging.initialize_wandb(
-    name=name.replace('/', ''),
-    entity='raghavthakar-oregon-state-university',
-    project='SMORL',
-    config=dict(config),
-)
-mop.train_migration(config, env, eval_env, run)
+# One W&B run per phase (explore / bc / finetune), grouped so all three sit
+# together in the UI but keep independent step axes.
+def make_run(phase, group):
+    return mm.utils.logging.initialize_wandb(
+        name=f'{group}-{phase}'.replace('/', ''),
+        entity='raghavthakar-oregon-state-university',
+        project='SMORL',
+        group=group.replace('/', ''),
+        job_type=phase,
+        config=dict(config),
+        reinit=True,
+    )
+
+mop.train_migration(config, env, eval_env, run_factory=make_run)

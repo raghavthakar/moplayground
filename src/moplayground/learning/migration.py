@@ -90,10 +90,11 @@ def select_archive_teachers(explore_dir, labels, selection='nondominated', max_t
     return teachers
 
 
-def build_bc_init(config, env, explore_dir):
+def build_bc_init(config, env, explore_dir, run=None):
     """Distill selected exploration teachers into a MORLAX hypernetwork (BC).
 
     Returns the BC-trained hypernetwork params, ready to seed ``morlax.train``.
+    When ``run`` is set, logs teacher selection and BC loss to that W&B run.
     """
     mp = config.migration_params
     labels = list(config.env_config.reward.optimization.labels)
@@ -110,6 +111,21 @@ def build_bc_init(config, env, explore_dir):
         objs = ', '.join(f'{l}={v:.1f}' for l, v in zip(labels, objectives))
         w = [round(float(x), 3) for x in pref]
         print(f'  step {step}: {objs} -> w={w}')
+
+    if run is not None:
+        import wandb
+
+        table = wandb.Table(columns=['ckpt_step'] + labels + ['w'])
+        for step, _ckpt, objectives, pref in teachers_info:
+            table.add_data(
+                int(step),
+                *[float(x) for x in objectives],
+                [round(float(x), 4) for x in pref],
+            )
+        run.log({
+            'bc/teachers': table,
+            'bc/num_teachers': len(teachers_info),
+        }, step=0)
 
     teacher_specs = [
         teacher_demos.TeacherSpec(
@@ -144,39 +160,66 @@ def build_bc_init(config, env, explore_dir):
         **network_params,
     )
     normalizer = bc.build_normalizer(buffer)
-    print(f'Behavioral cloning {int(buffer["raw_action"].shape[0])} transitions '
-          f'into the MORLAX hypernetwork...')
+    num_transitions = int(buffer['raw_action'].shape[0])
+    bc_steps = int(mp.bc.steps)
+    bc_batch = int(mp.bc.batch_size)
+    bc_lr = float(mp.bc.lr)
+    print(f'Behavioral cloning {num_transitions} transitions into the MORLAX hypernetwork...')
+    if run is not None:
+        run.log({
+            'bc/num_transitions': num_transitions,
+            'bc/steps': bc_steps,
+            'bc/batch_size': bc_batch,
+            'bc/lr': bc_lr,
+        }, step=0)
     return bc.pretrain_hypernetwork(
         networks,
         normalizer,
         buffer,
-        steps=int(mp.bc.steps),
-        batch_size=int(mp.bc.batch_size),
-        lr=float(mp.bc.lr),
+        steps=bc_steps,
+        batch_size=bc_batch,
+        lr=bc_lr,
         seed=seed,
+        run=run,
     )
 
 
-def train_migration(config, env, eval_env, run=None):
-    """Run explore -> BC -> finetune as a single budget-split pipeline."""
+def train_migration(config, env, eval_env, run_factory=None):
+    """Run explore -> BC -> finetune as a single budget-split pipeline.
+
+    Each phase logs to its OWN W&B run so their step axes never collide; all runs
+    share a ``group`` (the run name) so they stay together in the UI.
+    ``run_factory(phase, group)`` returns a fresh run (or ``None`` to skip W&B).
+    Phases: ``explore``, ``bc``, ``finetune``.
+    """
     config = create_config_dict(config)
     mp = config.migration_params
     base_name = config.name
+    group = base_name
 
-    # --- Phase 1/2: exploration (IntrinsicPPO), builds the unlock archive. ---
+    def _phase_run(phase):
+        return run_factory(phase, group) if run_factory is not None else None
+
+    # --- Phase 1/3: exploration (IntrinsicPPO), builds the unlock archive. ---
     explore_cfg = copy.deepcopy(config)
     explore_cfg.algorithm = 'intrinsic_ppo'
     explore_cfg.name = f'{base_name}/explore'
     explore_cfg.learning_params.base_ppo_params.num_timesteps = int(mp.explore_steps)
-    print(f'=== Migration phase 1/2: exploration for {int(mp.explore_steps)} steps ===')
-    train_policy(explore_cfg, env, eval_env, run=run)
+    print(f'=== Migration explore: {int(mp.explore_steps)} steps ===')
+    explore_run = _phase_run('explore')
+    train_policy(explore_cfg, env, eval_env, run=explore_run)
+    if explore_run is not None:
+        explore_run.finish()
     explore_dir = Path(config.save_dir) / f'{base_name}/explore'
 
-    # --- Migration: BC-distill archive teachers into the MORLAX policy init. ---
-    print('=== Migration: behavioral cloning archive teachers into MORLAX init ===')
-    init_hypernetwork_params = build_bc_init(config, env, explore_dir)
+    # --- Phase 2/3: BC-distill archive teachers into the MORLAX policy init. ---
+    print('=== Migration BC: distill archive teachers into MORLAX init ===')
+    bc_run = _phase_run('bc')
+    init_hypernetwork_params = build_bc_init(config, env, explore_dir, run=bc_run)
+    if bc_run is not None:
+        bc_run.finish()
 
-    # --- Phase 2/2: MORLAX finetuning from the BC init (MORLAX unchanged). ---
+    # --- Phase 3/3: MORLAX finetuning from the BC init (MORLAX unchanged). ---
     finetune_cfg = copy.deepcopy(config)
     finetune_cfg.algorithm = 'morlax'
     finetune_cfg.name = f'{base_name}/finetune'
@@ -189,7 +232,11 @@ def train_migration(config, env, eval_env, run=None):
         )
         return train_fn, network_factory
 
-    print(f'=== Migration phase 2/2: MORLAX finetuning for {int(mp.finetune_steps)} steps ===')
-    return train_policy(
-        finetune_cfg, env, eval_env, run=run, handle_params=handle_params
+    print(f'=== Migration finetune: {int(mp.finetune_steps)} steps ===')
+    finetune_run = _phase_run('finetune')
+    result = train_policy(
+        finetune_cfg, env, eval_env, run=finetune_run, handle_params=handle_params
     )
+    if finetune_run is not None:
+        finetune_run.finish()
+    return result
