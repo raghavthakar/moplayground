@@ -56,11 +56,15 @@ def select_archive_teachers(explore_dir, labels, selection='nondominated', max_t
     explore_dir = Path(explore_dir)
     csv_path = explore_dir / 'archive.csv'
     if not csv_path.exists():
-        raise FileNotFoundError(
-            f'No archive at {csv_path}: exploration produced no threshold unlocks. '
-            'Lower the unlock thresholds or extend explore_steps.'
+        print(
+            f'[migration] No archive at {csv_path}: exploration produced no '
+            'threshold unlocks. Skipping BC (cold MORLAX init).'
         )
+        return []
     df = pd.read_csv(csv_path)
+    if df.empty:
+        print(f'[migration] Empty archive at {csv_path}. Skipping BC (cold init).')
+        return []
     if selection == 'nondominated':
         subset = df[df['nondominated'] == 1]
         if len(subset) == 0:
@@ -81,7 +85,11 @@ def select_archive_teachers(explore_dir, labels, selection='nondominated', max_t
             (int(ckpt_step), str(ckpt), objectives, pref_from_objectives(objectives))
         )
     if not teachers:
-        raise RuntimeError(f'No archived checkpoints found under {explore_dir}/archive/ckpts.')
+        print(
+            f'[migration] No archived checkpoints under {explore_dir}/archive/ckpts. '
+            'Skipping BC (cold init).'
+        )
+        return []
 
     teachers.sort(key=lambda t: t[3][0])  # ascending by first-objective share
     if max_teachers and len(teachers) > max_teachers:
@@ -93,8 +101,10 @@ def select_archive_teachers(explore_dir, labels, selection='nondominated', max_t
 def build_bc_init(config, env, explore_dir, run=None):
     """Distill selected exploration teachers into a MORLAX hypernetwork (BC).
 
-    Returns the BC-trained hypernetwork params, ready to seed ``morlax.train``.
-    When ``run`` is set, logs teacher selection and BC loss to that W&B run.
+    Returns the BC-trained hypernetwork params, ready to seed ``morlax.train``,
+    or ``None`` if exploration produced no usable teachers (finetuning then
+    falls back to a cold MORLAX init). When ``run`` is set, logs teacher
+    selection and BC loss to that W&B run.
     """
     mp = config.migration_params
     labels = list(config.env_config.reward.optimization.labels)
@@ -106,6 +116,11 @@ def build_bc_init(config, env, explore_dir, run=None):
         selection=mp.get('selection', 'nondominated'),
         max_teachers=int(mp.get('max_teachers', 0)),
     )
+    if not teachers_info:
+        print('[migration] No teachers -> cold MORLAX init (BC skipped).')
+        if run is not None:
+            run.log({'bc/skipped': 1}, step=0)
+        return None
     print(f'Migrating {len(teachers_info)} teacher(s) from {explore_dir}:')
     for step, _ckpt, objectives, pref in teachers_info:
         objs = ', '.join(f'{l}={v:.1f}' for l, v in zip(labels, objectives))
