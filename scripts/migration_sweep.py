@@ -26,31 +26,24 @@ each run's config carries variant/seed/explore_m/finetune_m for UI grouping.
 
 Usage
 -----
-    # print the run matrix and exit
+    # print the run matrix and exit (no conda / PYTHONPATH needed)
     python -m scripts.migration_sweep --list
 
-    # one cell (Slurm array task)
+    # training runs need the SMORL conda env + src on PYTHONPATH:
+    export PYTHONPATH=/nfs/hpc/share/thakarr/SMORL/moplayground/src
+    conda activate /nfs/hpc/share/thakarr/SMORL
     python -m scripts.migration_sweep --index "${SLURM_ARRAY_TASK_ID}"
 
     # everything sequentially (local)
     python -m scripts.migration_sweep
 """
 
-import matplotlib
-matplotlib.use('Agg')
-
 import argparse
 import copy
 import json
-import os
 import time
 import traceback
 from pathlib import Path
-
-import wandb
-
-import moplayground as mop
-import minimal_mjx as mm
 
 ENTITY = 'raghavthakar-oregon-state-university'
 PROJECT = 'SMORL'
@@ -78,7 +71,17 @@ def build_matrix(seeds):
     return cells
 
 
-def _init_run(cfg, name, group, job_type, tags, extra):
+def _import_training_deps():
+    """Lazy import so ``--list`` works without conda / PYTHONPATH."""
+    import matplotlib
+    matplotlib.use('Agg')
+    import wandb
+    import moplayground as mop
+    import minimal_mjx as mm
+    return wandb, mop, mm
+
+
+def _init_run(mm, cfg, name, group, job_type, tags, extra):
     wandb_config = cfg.to_dict()
     wandb_config.update(extra)
     return mm.utils.logging.initialize_wandb(
@@ -108,7 +111,7 @@ def _write_meta(root, cfg, cell, group, run_names):
     (run_dir / 'run_meta.json').write_text(json.dumps(meta, indent=2) + '\n')
 
 
-def run_cell(base_config, cell, group, save_dir):
+def run_cell(wandb, mop, mm, base_config, cell, group, save_dir):
     cfg = copy.deepcopy(base_config)
     cfg.save_dir = save_dir
     cfg.name = f"{cell['variant']}-seed{cell['seed']}"
@@ -121,7 +124,7 @@ def run_cell(base_config, cell, group, save_dir):
 
     if cell['kind'] == 'baseline':
         cfg.algorithm = 'morlax'
-        run = _init_run(cfg, cfg.name, group, 'baseline', tags, cell)
+        run = _init_run(mm, cfg, cfg.name, group, 'baseline', tags, cell)
         run_names.append(run.name)
         try:
             mop.learning.train_policy(cfg, env, eval_env, run)
@@ -136,7 +139,7 @@ def run_cell(base_config, cell, group, save_dir):
 
         def run_factory(phase, base_name):
             run = _init_run(
-                cfg, f'{base_name}-{phase}', group, phase,
+                mm, cfg, f'{base_name}-{phase}', group, phase,
                 tags + [phase], {**cell, 'phase': phase},
             )
             run_names.append(run.name)
@@ -172,6 +175,7 @@ def main():
                   f"explore={c['explore_m']}M finetune={c['finetune_m']}M ({c['kind']})")
         return
 
+    wandb, mop, mm = _import_training_deps()
     base_config = mop.utils.read_config(args.base)
 
     selected = cells if args.index is None else [cells[args.index]]
@@ -189,7 +193,7 @@ def main():
         print(f'\n===== Running {name} ({cell["kind"]}, '
               f'explore={cell["explore_m"]}M finetune={cell["finetune_m"]}M) =====')
         try:
-            run_cell(base_config, cell, args.group, args.save_dir)
+            run_cell(wandb, mop, mm, base_config, cell, args.group, args.save_dir)
             results.append((name, 'ok'))
         except Exception as e:
             print(f'[FAIL] {name}: {e}')

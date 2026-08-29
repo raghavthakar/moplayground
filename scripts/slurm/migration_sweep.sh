@@ -19,9 +19,12 @@
 #
 # Submit:
 #   sbatch scripts/slurm/migration_sweep.sh
-# Preview the matrix (which index is which run):
+# Preview the matrix (no conda / PYTHONPATH needed):
 #   python -m scripts.migration_sweep --list
 # One cell interactively (debug):
+#   module load conda && source activate base && conda activate /nfs/hpc/share/thakarr/SMORL
+#   cd /nfs/hpc/share/thakarr/SMORL/moplayground
+#   export PYTHONPATH="${PWD}/src"
 #   SLURM_ARRAY_TASK_ID=0 bash scripts/slurm/migration_sweep.sh
 
 set -euo pipefail
