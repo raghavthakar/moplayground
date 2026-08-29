@@ -33,6 +33,8 @@ KEEP_PREFIXES = (
     'eval/avg_episode_length',
     'training/intrinsic_reward_mean',
     'training/rnd_loss',
+    'bc/',
+    'migration/',
 )
 
 
@@ -77,6 +79,9 @@ def main():
             cfg, 'learning_params', 'intrinsic_ppo_params', 'rnd_params', 'scale'
         )
         seed = _cfg_get(cfg, 'learning_params', 'base_ppo_params', 'seed')
+        variant = cfg.get('variant') if isinstance(cfg, dict) else _cfg_get(cfg, 'variant')
+        explore_m = cfg.get('explore_m') if isinstance(cfg, dict) else _cfg_get(cfg, 'explore_m')
+        finetune_m = cfg.get('finetune_m') if isinstance(cfg, dict) else _cfg_get(cfg, 'finetune_m')
         meta_rows.append({
             'run_id': run.id,
             'name': run.name,
@@ -84,6 +89,9 @@ def main():
             'group': run.group,
             'job_type': run.job_type,
             'seed': seed,
+            'variant': variant,
+            'explore_m': explore_m,
+            'finetune_m': finetune_m,
             'iscale': scale,
             'url': run.url,
         })
