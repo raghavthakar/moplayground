@@ -180,7 +180,9 @@ def main():
     parser.add_argument('--seeds', default=','.join(map(str, DEFAULT_SEEDS)), help='CSV of seeds.')
     parser.add_argument('--index', type=int, default=None, help='Run only this cell (Slurm array id).')
     parser.add_argument('--list', action='store_true', help='Print the run matrix and exit.')
-    parser.add_argument('--skip-existing', action='store_true', help='Skip a cell whose run dir exists.')
+    parser.add_argument('--skip-existing', action='store_true',
+                        help='Skip only cells that already completed (have run_meta.json). '
+                             'Partial dirs from failed cells are re-run.')
     args = parser.parse_args()
 
     splits_m = parse_splits(args.splits, args.total_m) if args.splits else default_splits_for(args.total_m)
@@ -210,8 +212,11 @@ def main():
     for cell in selected:
         name = f"{cell['variant']}-seed{cell['seed']}"
         run_dir = Path(args.save_dir) / name
-        if args.skip_existing and run_dir.is_dir() and any(run_dir.iterdir()):
-            print(f'[skip] {name} (exists at {run_dir})')
+        # A cell is "done" only once run_meta.json is written (at successful
+        # completion). Partial explore/ dirs from a crashed cell do NOT count,
+        # so a rerun re-does failed cells instead of silently skipping them.
+        if args.skip_existing and (run_dir / 'run_meta.json').is_file():
+            print(f'[skip] {name} (complete at {run_dir})')
             results.append((name, 'skipped'))
             continue
         print(f'\n===== Running {name} ({cell["kind"]}, '
@@ -227,6 +232,11 @@ def main():
     print('\n===== Migration sweep summary =====')
     for name, status in results:
         print(f'  {status:<10} {name}')
+
+    # Exit non-zero if any cell failed so Slurm marks the task FAILED (not
+    # COMPLETED). Exceptions were caught above for the summary; surface them here.
+    if any(str(status).startswith('fail') for _, status in results):
+        raise SystemExit(1)
 
 
 if __name__ == '__main__':

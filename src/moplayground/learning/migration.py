@@ -22,6 +22,7 @@ from __future__ import annotations
 import copy
 import functools
 import json
+import traceback
 from pathlib import Path
 
 import jax
@@ -204,13 +205,29 @@ def build_bc_init(config, env, explore_dir, run=None):
             seen.add(key)
             all_prefs.append(np.asarray(p, dtype=float))
 
+    # BC evals below are diagnostics only (they measure the head-start). The
+    # actual policy init comes from pretrain_hypernetwork, so an eval failure
+    # must never abort the run and waste the explore phase -- it degrades to a
+    # NaN-filled report and finetuning proceeds.
+    def _safe_eval(label, fn):
+        try:
+            return fn()
+        except Exception as exc:
+            print(f'[migration] BC eval "{label}" failed (finetune continues): {exc}')
+            traceback.print_exc()
+            return {
+                'error': str(exc), 'hypervolume': float('nan'),
+                'sparsity': float('nan'), 'num_points': 0,
+                'forward_max': float('nan'), 'jump_max': float('nan'),
+            }
+
     cold_params = networks.hypernetwork.init(jax.random.PRNGKey(seed))
     print('Evaluating cold hypernetwork (pre-BC)...')
-    cold_eval = bc.evaluate_hypernetwork(
+    cold_eval = _safe_eval('cold', lambda: bc.evaluate_hypernetwork(
         networks, normalizer, cold_params, demo_env,
         all_prefs, episode_length=episode_length, action_repeat=action_repeat,
         seed=seed, thresholds=thresholds,
-    )
+    ))
     bc._log_eval_report(run, 'bc/cold/eval', cold_eval, step=0)
 
     hypernet_params = bc.pretrain_hypernetwork(
@@ -225,24 +242,28 @@ def build_bc_init(config, env, explore_dir, run=None):
     )
 
     print('Evaluating BC hypernetwork (post-BC, pre-finetune)...')
-    post_eval = bc.evaluate_hypernetwork(
+    post_eval = _safe_eval('post_bc', lambda: bc.evaluate_hypernetwork(
         networks, normalizer, hypernet_params, demo_env,
         all_prefs, episode_length=episode_length, action_repeat=action_repeat,
         seed=seed + 1, thresholds=thresholds,
-    )
-    teacher_eval = bc.evaluate_hypernetwork(
+    ))
+    teacher_eval = _safe_eval('teachers', lambda: bc.evaluate_hypernetwork(
         networks, normalizer, hypernet_params, demo_env,
         teacher_prefs, episode_length=episode_length, action_repeat=action_repeat,
         seed=seed + 2, thresholds=thresholds,
         teacher_objectives=teacher_objs,
-    )
+    ))
     bc._log_eval_report(run, 'bc/eval', post_eval, step=bc_steps)
     bc._log_eval_report(run, 'bc/eval/teachers', teacher_eval, step=bc_steps)
+
+    def _gain(key):
+        return post_eval.get(key, float('nan')) - cold_eval.get(key, float('nan'))
+
     if run is not None:
         run.log({
-            'bc/eval/hypervolume_gain': post_eval['hypervolume'] - cold_eval['hypervolume'],
-            'bc/eval/jump_gain': post_eval['jump_max'] - cold_eval['jump_max'],
-            'bc/eval/forward_gain': post_eval['forward_max'] - cold_eval['forward_max'],
+            'bc/eval/hypervolume_gain': _gain('hypervolume'),
+            'bc/eval/jump_gain': _gain('jump_max'),
+            'bc/eval/forward_gain': _gain('forward_max'),
         }, step=bc_steps)
 
     eval_report = {
@@ -253,9 +274,9 @@ def build_bc_init(config, env, explore_dir, run=None):
         'post_bc': post_eval,
         'teachers': teacher_eval,
         'gain': {
-            'hypervolume': post_eval['hypervolume'] - cold_eval['hypervolume'],
-            'jump_max': post_eval['jump_max'] - cold_eval['jump_max'],
-            'forward_max': post_eval['forward_max'] - cold_eval['forward_max'],
+            'hypervolume': _gain('hypervolume'),
+            'jump_max': _gain('jump_max'),
+            'forward_max': _gain('forward_max'),
         },
     }
     return hypernet_params, eval_report
@@ -315,13 +336,13 @@ def train_migration(config, env, eval_env, run_factory=None):
     print(f'=== Migration finetune: {int(mp.finetune_steps)} steps ===')
     finetune_run = _phase_run('finetune')
     if finetune_run is not None and not bc_eval.get('skipped'):
-        post = bc_eval['post_bc']
+        post = bc_eval.get('post_bc', {})
         finetune_run.log({
-            'migration/bc_init_hypervolume': post['hypervolume'],
-            'migration/bc_init_forward_max': post['forward_max'],
-            'migration/bc_init_jump_max': post['jump_max'],
+            'migration/bc_init_hypervolume': post.get('hypervolume', float('nan')),
+            'migration/bc_init_forward_max': post.get('forward_max', float('nan')),
+            'migration/bc_init_jump_max': post.get('jump_max', float('nan')),
             'migration/bc_init_unlock_both': post.get('unlock_both', float('nan')),
-            'migration/bc_hypervolume_gain': bc_eval['gain']['hypervolume'],
+            'migration/bc_hypervolume_gain': bc_eval.get('gain', {}).get('hypervolume', float('nan')),
         }, step=0)
     result = train_policy(
         finetune_cfg, env, eval_env, run=finetune_run, handle_params=handle_params
