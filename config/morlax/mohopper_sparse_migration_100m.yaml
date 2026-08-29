@@ -1,0 +1,103 @@
+# 100M BC migration on sparse MOHopper (50x50 trap).
+#
+# Budget splits are set by scripts/migration_sweep.py (--total-m 100).
+# Default splits: e20-f80 .. e50-f50 (step 5M) + baseline-100m.
+#
+# Run via:
+#   sbatch scripts/slurm/migration_sweep_100m.sh
+name: morlax-hopper-sparse-migrate-100m-run0
+save_dir: /nfs/hpc/share/thakarr/SMORL/results/migration_budget_sweep_100m
+description: '100M explore(IntrinsicPPO)->BC->finetune(MORLAX) on sparse MOHopper (50x50)'
+algorithm: migration
+env: MOHopper
+backend: np
+mo2so:
+  enabled: false
+  weighting: [0.5, 0.5]
+env_config:
+  ctrl_dt: 0.01
+  sim_dt: 0.005
+  action_scale: 3.0
+  history_length: 5
+  ideal_base_height: 0.5
+  ideal_base_vel: 0.5
+  min_base_height: 0.3
+  add_random_joint_state: false
+  add_random_pitch: false
+  reward:
+    weights:
+      run:        1.5
+      jump:       12.0
+      ctrl_cost: -0.0002
+      alive:      1.0
+      upright:    4.0
+      done:       0
+    sigmas:
+      height:     0.01
+      speed:      0.01
+      energy:     0.1
+      imitation:  0.03
+    optimization:
+      objectives:        [['run'], ['jump']]
+      shared_objectives: []
+      labels:            ['Forward Distance', 'Jump Height']
+    episodic_threshold:
+      enabled: true
+      thresholds: [50.0, 50.0]
+  termination:
+    enabled: true
+    base_height: 0.2
+learning_params:
+  base_ppo_params:
+    action_repeat: 1
+    batch_size: 32
+    clipping_epsilon: 0.2
+    deterministic_eval: true
+    discounting: 0.99
+    entropy_cost: 0.01
+    episode_length: 500
+    learning_rate: 0.000005
+    max_grad_norm: 1.0
+    normalize_observations: true
+    num_envs: 1024
+    num_evals: 15
+    num_minibatches: 32
+    num_timesteps: 100000000
+    num_updates_per_batch: 4
+    reward_scaling: 1.0
+    seed: 0
+    unroll_length: 30
+  intrinsic_ppo_params:
+    train_fn_params:
+      learning_rate: 0.0003
+    network_params:
+      policy_hidden_layer_sizes: [64, 64]
+      value_hidden_layer_sizes: [256, 256]
+    rnd_params:
+      hidden_layer_sizes: [256, 256]
+      output_size: 64
+      learning_rate: 0.0001
+      scale: 1.0
+  morlax_params:
+    train_fn_params:
+      alpha: 1.0
+      k: 8
+      sampling: sparse-heavytail
+      warmup_frac: 0.0
+    network_params:
+      hypertype: dual
+      hypersize: [128, 128]
+      num_features: 16
+      policy_hidden_layer_sizes: [64, 64]
+      value_hidden_layer_sizes:  [64, 64]
+migration_params:
+  explore_steps: 20000000
+  finetune_steps: 80000000
+  selection: nondominated
+  max_teachers: 0
+  demos:
+    num_episodes: 64
+  bc:
+    steps: 6000
+    batch_size: 512
+    lr: 0.0003

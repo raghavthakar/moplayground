@@ -1,41 +1,20 @@
 """Budget-split migration experiment: plain MORLAX vs explore->BC->finetune.
 
-Tests the migration concept end-to-end on sparse MOHopper (50x50), multi-seed.
-Every run consumes the SAME 50M sample budget; the only differences are:
+Every run consumes the same total sample budget (``--total-m``). Variants:
 
-  * baseline-50m : plain cold-start MORLAX for the full 50M.
-  * e{E}-f{F}    : E million IntrinsicPPO exploration, BC of the Pareto archive
-                   into the MORLAX hypernetwork, then F million MORLAX finetuning
-                   (E + F = 50).
+  * baseline-{N}m : plain cold-start MORLAX for the full budget.
+  * e{E}-f{F}     : E M IntrinsicPPO exploration, BC of the Pareto archive into
+                    the MORLAX hypernetwork, then F M MORLAX finetuning (E+F=N).
 
-All variants derive from ONE config (config/morlax/mohopper_sparse_migration.yaml)
-so the baseline and every finetune phase share identical MORLAX settings -- the
-sole difference is cold vs BC-seeded init. This keeps the comparison honest.
-
-Organisation
-------------
-On disk (under --save-dir, one root for the whole experiment):
-    <root>/baseline-50m-seed0/                 (plain MORLAX; archive.csv, progress.svg)
-    <root>/e10-f40-seed0/explore/              (IntrinsicPPO archive + ckpts)
-    <root>/e10-f40-seed0/finetune/             (MORLAX archive + fronts)
-    <root>/<run>/run_meta.json                 (variant, seed, budget, wandb ids)
-Aggregate with scripts/analyze_migration_sweep.py -> <root>/summary.csv.
-
-W&B: all runs share one --group; job_type is baseline/explore/bc/finetune and
-each run's config carries variant/seed/explore_m/finetune_m for UI grouping.
+BC head-start is logged to the ``bc`` W&B run (``bc/cold/eval/*``, ``bc/eval/*``)
+and on disk as ``<run>/bc_eval.json``. Finetune logs ``migration/bc_init_*`` at
+step 0 before any gradient update.
 
 Usage
 -----
-    # print the run matrix and exit (no conda / PYTHONPATH needed)
     python -m scripts.migration_sweep --list
-
-    # training runs need the SMORL conda env + src on PYTHONPATH:
-    export PYTHONPATH=/nfs/hpc/share/thakarr/SMORL/moplayground/src
-    conda activate /nfs/hpc/share/thakarr/SMORL
-    python -m scripts.migration_sweep --index "${SLURM_ARRAY_TASK_ID}"
-
-    # everything sequentially (local)
-    python -m scripts.migration_sweep
+    python -m scripts.migration_sweep --total-m 100 --splits "20,80;25,75;30,70" \\
+        --seeds 0,1,2,3,4,5,6,7,8,9 --index "${SLURM_ARRAY_TASK_ID}"
 """
 
 import argparse
@@ -48,31 +27,47 @@ from pathlib import Path
 ENTITY = 'raghavthakar-oregon-state-university'
 PROJECT = 'SMORL'
 
-# Explore/finetune budget splits in millions (must each sum to TOTAL_M).
-TOTAL_M = 50
-SPLITS_M = [(5, 45), (10, 40), (15, 35), (20, 30), (25, 25)]
+# Defaults match the original 50M sweep (override via CLI for new experiments).
+DEFAULT_TOTAL_M = 50
+DEFAULT_SPLITS_M = [(5, 45), (10, 40), (15, 35), (20, 30), (25, 25)]
 DEFAULT_SEEDS = [0, 1, 2]
 DEFAULT_GROUP = 'mohopper-thr50-budget-sweep'
 DEFAULT_SAVE_DIR = '/nfs/hpc/share/thakarr/SMORL/results/migration_budget_sweep'
 DEFAULT_BASE = 'config/morlax/mohopper_sparse_migration.yaml'
 
 
-def build_matrix(seeds):
+def parse_splits(splits_str, total_m):
+    """Parse ``"20,80;25,75"`` into ``[(20, 80), (25, 75), ...]``."""
+    pairs = []
+    for part in splits_str.split(';'):
+        part = part.strip()
+        if not part:
+            continue
+        e, f = (int(x.strip()) for x in part.split(','))
+        if e + f != total_m:
+            raise ValueError(f'Split ({e},{f}) does not sum to {total_m}M.')
+        pairs.append((e, f))
+    if not pairs:
+        raise ValueError('No splits parsed.')
+    return pairs
+
+
+def build_matrix(seeds, total_m, splits_m):
     """Deterministic (variant, seed) cells; index maps 1:1 to a Slurm array id."""
-    variants = [('baseline-50m', 'baseline', 0, TOTAL_M)]
-    variants += [(f'e{e}-f{f}', 'migration', e, f) for (e, f) in SPLITS_M]
+    baseline = f'baseline-{total_m}m'
+    variants = [(baseline, 'baseline', 0, total_m)]
+    variants += [(f'e{e}-f{f}', 'migration', e, f) for (e, f) in splits_m]
     cells = []
     for name, kind, e, f in variants:
         for seed in seeds:
             cells.append({
                 'variant': name, 'kind': kind, 'seed': int(seed),
-                'explore_m': int(e), 'finetune_m': int(f),
+                'explore_m': int(e), 'finetune_m': int(f), 'total_m': int(total_m),
             })
     return cells
 
 
 def _import_training_deps():
-    """Lazy import so ``--list`` works without conda / PYTHONPATH."""
     import matplotlib
     matplotlib.use('Agg')
     import wandb
@@ -124,6 +119,7 @@ def run_cell(wandb, mop, mm, base_config, cell, group, save_dir):
 
     if cell['kind'] == 'baseline':
         cfg.algorithm = 'morlax'
+        cfg.learning_params.base_ppo_params.num_timesteps = cell['total_m'] * 1_000_000
         run = _init_run(mm, cfg, cfg.name, group, 'baseline', tags, cell)
         run_names.append(run.name)
         try:
@@ -150,28 +146,35 @@ def run_cell(wandb, mop, mm, base_config, cell, group, save_dir):
     _write_meta(save_dir, cfg, cell, group, run_names)
 
 
+def default_splits_for(total_m):
+    if total_m == DEFAULT_TOTAL_M:
+        return list(DEFAULT_SPLITS_M)
+    return [(e, total_m - e) for e in range(20, total_m // 2 + 1, 5)]
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--base', default=DEFAULT_BASE, help='Migration base YAML config.')
     parser.add_argument('--save-dir', default=DEFAULT_SAVE_DIR, help='Experiment root on disk.')
     parser.add_argument('--group', default=DEFAULT_GROUP, help='W&B group for the whole experiment.')
+    parser.add_argument('--total-m', type=int, default=DEFAULT_TOTAL_M, help='Total budget in millions.')
+    parser.add_argument('--splits', default=None,
+                        help='Semicolon-separated explore,finetune pairs in M, e.g. "20,80;25,75".')
     parser.add_argument('--seeds', default=','.join(map(str, DEFAULT_SEEDS)), help='CSV of seeds.')
     parser.add_argument('--index', type=int, default=None, help='Run only this cell (Slurm array id).')
     parser.add_argument('--list', action='store_true', help='Print the run matrix and exit.')
     parser.add_argument('--skip-existing', action='store_true', help='Skip a cell whose run dir exists.')
     args = parser.parse_args()
 
-    for e, f in SPLITS_M:
-        if e + f != TOTAL_M:
-            raise SystemExit(f'Split ({e},{f}) does not sum to {TOTAL_M}M.')
-
+    splits_m = parse_splits(args.splits, args.total_m) if args.splits else default_splits_for(args.total_m)
     seeds = [int(x) for x in args.seeds.split(',') if x.strip() != '']
-    cells = build_matrix(seeds)
+    cells = build_matrix(seeds, args.total_m, splits_m)
 
     if args.list:
-        print(f'Experiment: {args.group}  ({len(cells)} runs; Slurm --array=0-{len(cells) - 1})')
+        print(f'Experiment: {args.group}  budget={args.total_m}M  ({len(cells)} runs; '
+              f'Slurm --array=0-{len(cells) - 1})')
         for i, c in enumerate(cells):
-            print(f"  [{i:2d}] {c['variant']:<12} seed={c['seed']}  "
+            print(f"  [{i:2d}] {c['variant']:<14} seed={c['seed']}  "
                   f"explore={c['explore_m']}M finetune={c['finetune_m']}M ({c['kind']})")
         return
 
