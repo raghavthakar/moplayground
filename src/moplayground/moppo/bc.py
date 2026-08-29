@@ -50,11 +50,14 @@ def _unlock_fraction(rewards: np.ndarray, thresholds: list[float] | None) -> dic
     if thresholds is None or len(thresholds) == 0:
         return {}
     thr = np.asarray(thresholds, dtype=float)
+    # rewards must be (num_preferences, num_objectives); bail out otherwise so a
+    # shape surprise degrades to "no unlock stats" instead of crashing the run.
+    if rewards.ndim != 2 or rewards.shape[1] < len(thr):
+        return {}
     out = {}
     for i in range(len(thr)):
         out[f'unlock_obj_{i}'] = float((rewards[:, i] >= thr[i]).mean())
-    if rewards.shape[1] == len(thr):
-        out['unlock_both'] = float((rewards >= thr).all(axis=1).mean())
+    out['unlock_both'] = float((rewards[:, : len(thr)] >= thr).all(axis=1).mean())
     return out
 
 
@@ -70,11 +73,14 @@ def evaluate_hypernetwork(
     seed: int = 0,
     thresholds: list[float] | None = None,
     teacher_objectives: list[np.ndarray] | None = None,
+    num_eval_envs: int = 64,
 ) -> dict:
     """Roll out a hypernetwork at fixed preferences; return summary metrics.
 
-    Uses the same gated training env as MORLAX so BC numbers are comparable to
-  finetune step-0 ``eval/hypervolume``.
+    Each preference is rolled out in ``num_eval_envs`` parallel envs and the
+    per-objective episodic returns are averaged, giving one ``(num_objectives,)``
+    return vector per preference. Uses the same gated training env as MORLAX so
+    BC numbers are comparable to finetune step-0 ``eval/hypervolume``.
     """
     from moplayground.learning.wrappers import MultiObjectiveEvalWrapper
 
@@ -88,18 +94,21 @@ def evaluate_hypernetwork(
     def rollout(pref, key):
         directive = jnp.asarray(pref, dtype=jnp.float32)
         policy = inference_fn(params, directive, deterministic=True)
-        state = eval_env.reset(jax.random.split(key, 1))
+        state = eval_env.reset(jax.random.split(key, num_eval_envs))
         final_state = acting.generate_unroll(
             eval_env, state, policy, directive, key, unroll_length=unroll_len
         )[0]
-        return final_state.info['eval_metrics'].episode_metrics['reward']
+        # episode_metrics['reward'] is (num_eval_envs, num_objectives); average
+        # the parallel rollouts into one return vector for this preference.
+        episodic_return = final_state.info['eval_metrics'].episode_metrics['reward']
+        return jnp.mean(episodic_return, axis=0)
 
     key = jax.random.PRNGKey(seed)
     rewards = []
-    for i, pref in enumerate(prefs):
+    for pref in prefs:
         key, sub = jax.random.split(key)
-        rewards.append(np.asarray(rollout(pref, sub)))
-    rewards = np.stack(rewards, axis=0).astype(float)
+        rewards.append(np.asarray(rollout(pref, sub), dtype=float))
+    rewards = np.stack(rewards, axis=0).astype(float)  # (num_preferences, num_objectives)
     directives = np.stack(prefs, axis=0).astype(float)
 
     try:
