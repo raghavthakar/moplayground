@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import copy
 import functools
+import json
 from pathlib import Path
 
 import jax
@@ -101,14 +102,18 @@ def select_archive_teachers(explore_dir, labels, selection='nondominated', max_t
 def build_bc_init(config, env, explore_dir, run=None):
     """Distill selected exploration teachers into a MORLAX hypernetwork (BC).
 
-    Returns the BC-trained hypernetwork params, ready to seed ``morlax.train``,
-    or ``None`` if exploration produced no usable teachers (finetuning then
-    falls back to a cold MORLAX init). When ``run`` is set, logs teacher
-    selection and BC loss to that W&B run.
+    Returns ``(hypernetwork_params, eval_report)``. ``hypernetwork_params`` is
+    ready to seed ``morlax.train``, or ``None`` if exploration produced no usable
+    teachers (finetuning then falls back to a cold MORLAX init). ``eval_report``
+    captures cold vs post-BC rollout metrics at fixed preferences for analysis.
     """
     mp = config.migration_params
     labels = list(config.env_config.reward.optimization.labels)
     seed = int(config.learning_params.base_ppo_params.seed)
+    episode_length = int(config.learning_params.base_ppo_params.episode_length)
+    action_repeat = int(config.learning_params.base_ppo_params.action_repeat)
+    thr_cfg = config.env_config.reward.get('episodic_threshold', None)
+    thresholds = list(thr_cfg.thresholds) if thr_cfg and thr_cfg.get('enabled') else None
 
     teachers_info = select_archive_teachers(
         explore_dir,
@@ -118,9 +123,10 @@ def build_bc_init(config, env, explore_dir, run=None):
     )
     if not teachers_info:
         print('[migration] No teachers -> cold MORLAX init (BC skipped).')
+        report = {'skipped': True, 'reason': 'no_teachers'}
         if run is not None:
             run.log({'bc/skipped': 1}, step=0)
-        return None
+        return None, report
     print(f'Migrating {len(teachers_info)} teacher(s) from {explore_dir}:')
     for step, _ckpt, objectives, pref in teachers_info:
         objs = ', '.join(f'{l}={v:.1f}' for l, v in zip(labels, objectives))
@@ -149,8 +155,6 @@ def build_bc_init(config, env, explore_dir, run=None):
         for (step, ckpt, _objectives, pref) in teachers_info
     ]
 
-    episode_length = int(config.learning_params.base_ppo_params.episode_length)
-    action_repeat = int(config.learning_params.base_ppo_params.action_repeat)
     demo_env = mo_wrapper(env, episode_length=episode_length, action_repeat=action_repeat)
     num_episodes = int(mp.demos.num_episodes)
 
@@ -187,7 +191,29 @@ def build_bc_init(config, env, explore_dir, run=None):
             'bc/batch_size': bc_batch,
             'bc/lr': bc_lr,
         }, step=0)
-    return bc.pretrain_hypernetwork(
+
+    eval_prefs = bc.standard_eval_preferences(num_objectives)
+    teacher_prefs = [pref for (_s, _c, _o, pref) in teachers_info]
+    teacher_objs = [obj for (_s, _c, obj, _p) in teachers_info]
+    # Dedupe while preserving order: standard anchors + teacher labels.
+    seen = set()
+    all_prefs = []
+    for p in eval_prefs + teacher_prefs:
+        key = tuple(np.round(np.asarray(p, dtype=float), 6).tolist())
+        if key not in seen:
+            seen.add(key)
+            all_prefs.append(np.asarray(p, dtype=float))
+
+    cold_params = networks.hypernetwork.init(jax.random.PRNGKey(seed))
+    print('Evaluating cold hypernetwork (pre-BC)...')
+    cold_eval = bc.evaluate_hypernetwork(
+        networks, normalizer, cold_params, demo_env,
+        all_prefs, episode_length=episode_length, action_repeat=action_repeat,
+        seed=seed, thresholds=thresholds,
+    )
+    bc._log_eval_report(run, 'bc/cold/eval', cold_eval, step=0)
+
+    hypernet_params = bc.pretrain_hypernetwork(
         networks,
         normalizer,
         buffer,
@@ -197,6 +223,42 @@ def build_bc_init(config, env, explore_dir, run=None):
         seed=seed,
         run=run,
     )
+
+    print('Evaluating BC hypernetwork (post-BC, pre-finetune)...')
+    post_eval = bc.evaluate_hypernetwork(
+        networks, normalizer, hypernet_params, demo_env,
+        all_prefs, episode_length=episode_length, action_repeat=action_repeat,
+        seed=seed + 1, thresholds=thresholds,
+    )
+    teacher_eval = bc.evaluate_hypernetwork(
+        networks, normalizer, hypernet_params, demo_env,
+        teacher_prefs, episode_length=episode_length, action_repeat=action_repeat,
+        seed=seed + 2, thresholds=thresholds,
+        teacher_objectives=teacher_objs,
+    )
+    bc._log_eval_report(run, 'bc/eval', post_eval, step=bc_steps)
+    bc._log_eval_report(run, 'bc/eval/teachers', teacher_eval, step=bc_steps)
+    if run is not None:
+        run.log({
+            'bc/eval/hypervolume_gain': post_eval['hypervolume'] - cold_eval['hypervolume'],
+            'bc/eval/jump_gain': post_eval['jump_max'] - cold_eval['jump_max'],
+            'bc/eval/forward_gain': post_eval['forward_max'] - cold_eval['forward_max'],
+        }, step=bc_steps)
+
+    eval_report = {
+        'skipped': False,
+        'num_teachers': len(teachers_info),
+        'num_transitions': num_transitions,
+        'cold': cold_eval,
+        'post_bc': post_eval,
+        'teachers': teacher_eval,
+        'gain': {
+            'hypervolume': post_eval['hypervolume'] - cold_eval['hypervolume'],
+            'jump_max': post_eval['jump_max'] - cold_eval['jump_max'],
+            'forward_max': post_eval['forward_max'] - cold_eval['forward_max'],
+        },
+    }
+    return hypernet_params, eval_report
 
 
 def train_migration(config, env, eval_env, run_factory=None):
@@ -230,7 +292,10 @@ def train_migration(config, env, eval_env, run_factory=None):
     # --- Phase 2/3: BC-distill archive teachers into the MORLAX policy init. ---
     print('=== Migration BC: distill archive teachers into MORLAX init ===')
     bc_run = _phase_run('bc')
-    init_hypernetwork_params = build_bc_init(config, env, explore_dir, run=bc_run)
+    init_hypernetwork_params, bc_eval = build_bc_init(config, env, explore_dir, run=bc_run)
+    bc_eval_path = Path(config.save_dir) / base_name / 'bc_eval.json'
+    bc_eval_path.parent.mkdir(parents=True, exist_ok=True)
+    bc_eval_path.write_text(json.dumps(bc_eval, indent=2) + '\n')
     if bc_run is not None:
         bc_run.finish()
 
@@ -249,6 +314,15 @@ def train_migration(config, env, eval_env, run_factory=None):
 
     print(f'=== Migration finetune: {int(mp.finetune_steps)} steps ===')
     finetune_run = _phase_run('finetune')
+    if finetune_run is not None and not bc_eval.get('skipped'):
+        post = bc_eval['post_bc']
+        finetune_run.log({
+            'migration/bc_init_hypervolume': post['hypervolume'],
+            'migration/bc_init_forward_max': post['forward_max'],
+            'migration/bc_init_jump_max': post['jump_max'],
+            'migration/bc_init_unlock_both': post.get('unlock_both', float('nan')),
+            'migration/bc_hypervolume_gain': bc_eval['gain']['hypervolume'],
+        }, step=0)
     result = train_policy(
         finetune_cfg, env, eval_env, run=finetune_run, handle_params=handle_params
     )
