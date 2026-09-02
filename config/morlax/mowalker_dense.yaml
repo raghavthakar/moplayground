@@ -1,0 +1,86 @@
+# Dense (non-sparsified) MORLAX MOWalker: run vs energy.
+#
+# CALIBRATION BASELINE. No episodic-return gating (episodic_threshold disabled),
+# so this measures the achievable per-objective returns of MORLAX on MOWalker.
+# Read `eval/return/<label>/max` (and /mean) from W&B to set the achievable
+# ceiling per objective; sparsity thresholds for later sweeps are expressed as
+# a fraction of these values.
+#
+# The launcher runs this via scripts.seed_sweep with --threshold "0,0", which
+# keeps episodic_threshold disabled (dense). MORLAX hyperparameters mirror the
+# validated mohopper_sparse config so the method is held fixed across domains.
+name: morlax-walker-dense
+save_dir: /nfs/hpc/share/thakarr/SMORL/results/walker_dense_calib
+description: 'Dense MORLAX MOWalker (run vs energy); achievable-return calibration'
+algorithm: morlax
+env: MOWalker
+backend: np
+mo2so:
+  enabled: false
+  weighting: [0.5, 0.5]
+env_config:
+  ctrl_dt: 0.01
+  sim_dt: 0.005
+  action_scale: 3.0
+  history_length: 5
+  ideal_base_height: 0.5
+  ideal_base_vel: 0.5
+  min_base_height: 0.3
+  add_random_joint_state: false
+  add_random_pitch: false
+  reward:
+    weights:
+      run:        1.0
+      energy:     1.0
+      alive:      1.0
+      done:       0
+    sigmas:
+      height:     0.01
+      speed:      0.01
+      energy:     0.1
+      imitation:  0.03
+    optimization:
+      objectives:        [['run'], ['energy']]
+      # Pure per-objective task returns (see mowalker_rnd / mohopper_sparse).
+      shared_objectives: []
+      labels:            ['Running Speed', 'Energy Efficiency']
+    # Present but disabled: seed_sweep needs the key, --threshold "0,0" keeps
+    # it off for a dense calibration run.
+    episodic_threshold:
+      enabled: false
+      thresholds: [0.0, 0.0]
+  termination:
+    enabled: true
+    base_height: 0.2
+learning_params:
+  base_ppo_params:
+    action_repeat: 1
+    batch_size: 32
+    clipping_epsilon: 0.2
+    deterministic_eval: true
+    discounting: 0.99
+    entropy_cost: 0.01
+    episode_length: 500
+    learning_rate: 0.000005
+    max_grad_norm: 1.0
+    normalize_observations: true
+    num_envs: 1024
+    num_evals: 13
+    num_minibatches: 32
+    num_timesteps: 60000000
+    num_updates_per_batch: 4
+    reward_scaling: 1.0
+    seed: 0
+    unroll_length: 30
+  morlax_params:
+    train_fn_params:
+      alpha: 1.0
+      k: 8
+      sampling: sparse-heavytail
+      warmup_frac: 0.0
+    network_params:
+      hypertype: dual
+      hypersize: [128, 128]
+      num_features: 16
+      policy_hidden_layer_sizes: [64, 64]
+      value_hidden_layer_sizes:  [64, 64]

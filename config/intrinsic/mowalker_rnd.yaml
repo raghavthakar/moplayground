@@ -1,0 +1,87 @@
+# Stage-1 IntrinsicPPO: PPO trained only on RND novelty (MOWalker).
+#
+# RETURN/THRESHOLD-AGNOSTIC EXPLORATION. Training reward is pure RND novelty, so
+# it is independent of any sparsity threshold. Eval measures *ungated* extrinsic
+# (run / energy) returns, and every unlocking eval is copied into the extrinsic
+# archive together with its policy checkpoint. We run with a negligible unlock
+# threshold ([1, 1], overridden by the launcher) so the archive retains ~every
+# checkpoint across training -- a reusable "teacher bank". Later, teachers for
+# ANY real sparsity threshold are selected offline by filtering this archive.
+#
+# num_evals=13 over 60M -> an archive snapshot roughly every 5M frames.
+name: intrinsic-ppo-walker-rnd-agnostic
+save_dir: /nfs/hpc/share/thakarr/SMORL/results/walker_explore_agnostic
+description: 'Return-agnostic IntrinsicPPO + RND on MOWalker; reusable teacher bank'
+algorithm: intrinsic_ppo
+env: MOWalker
+backend: np
+mo2so:
+  enabled: false
+  weighting: [0.5, 0.5]
+env_config:
+  ctrl_dt: 0.01
+  sim_dt: 0.005
+  action_scale: 3.0
+  history_length: 5
+  ideal_base_height: 0.5
+  ideal_base_vel: 0.5
+  min_base_height: 0.3
+  add_random_joint_state: false
+  add_random_pitch: false
+  reward:
+    weights:
+      run:        1.0
+      energy:     1.0
+      alive:      1.0
+      done:       0
+    sigmas:
+      height:     0.01
+      speed:      0.01
+      energy:     0.1
+      imitation:  0.03
+    optimization:
+      objectives:        [['run'], ['energy']]
+      # No shared terms: each objective return is the pure task signal, so a
+      # later episodic-return threshold measures genuine run/energy achievement
+      # rather than survival. Viability is handled by termination.
+      shared_objectives: []
+      labels:            ['Running Speed', 'Energy Efficiency']
+    # Negligible unlock threshold => return-agnostic archive retention.
+    # The launcher overrides this (scripts pass --threshold "1,1").
+    episodic_threshold:
+      enabled: true
+      thresholds: [1.0, 1.0]
+  termination:
+    enabled: true
+    base_height: 0.2
+learning_params:
+  base_ppo_params:
+    action_repeat: 1
+    batch_size: 32
+    clipping_epsilon: 0.2
+    deterministic_eval: true
+    discounting: 0.99
+    entropy_cost: 0.01
+    episode_length: 500
+    learning_rate: 0.0003
+    max_grad_norm: 1.0
+    normalize_observations: true
+    num_envs: 1024
+    num_evals: 13
+    num_minibatches: 32
+    num_timesteps: 60000000
+    num_updates_per_batch: 4
+    reward_scaling: 1.0
+    seed: 0
+    unroll_length: 30
+  intrinsic_ppo_params:
+    train_fn_params: {}
+    network_params:
+      policy_hidden_layer_sizes: [64, 64]
+      value_hidden_layer_sizes: [256, 256]
+    rnd_params:
+      hidden_layer_sizes: [256, 256]
+      output_size: 64
+      learning_rate: 0.0001
+      # Multiplier on std-normalized RND novelty (the PPO training reward).
+      scale: 1.0
