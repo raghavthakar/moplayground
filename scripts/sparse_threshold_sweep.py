@@ -63,7 +63,9 @@ def parse_threshold_sets(s):
 def apply_overrides(base_config, thresholds):
     cfg = copy.deepcopy(base_config)
     thr_cfg = cfg.env_config.reward.episodic_threshold
-    if all(t <= 0.0 for t in thresholds):
+    # Exactly-zero vector = dense (gating off). Negative thresholds are real
+    # gates (walker energy) and must stay enabled.
+    if all(t == 0.0 for t in thresholds):
         thr_cfg.enabled = False
     else:
         thr_cfg.enabled = True
@@ -122,7 +124,7 @@ def main():
 
     print(f'Sweep: {len(threshold_sets)} threshold sets')
     for i, vec in enumerate(threshold_sets):
-        label = 'disabled (dense)' if all(t <= 0.0 for t in vec) else vec
+        label = 'disabled (dense)' if all(t == 0.0 for t in vec) else vec
         print(f'  [{i}] thresholds={label}')
 
     if args.index is not None:

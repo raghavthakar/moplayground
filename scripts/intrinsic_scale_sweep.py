@@ -61,7 +61,9 @@ def apply_overrides(base_config, thresholds, scale, seed):
     cfg = copy.deepcopy(base_config)
 
     thr_cfg = cfg.env_config.reward.episodic_threshold
-    if all(t <= 0.0 for t in thresholds):
+    # Exactly-zero vector = dense (gating off). Negative thresholds are real
+    # gates (walker energy) and must stay enabled.
+    if all(t == 0.0 for t in thresholds):
         thr_cfg.enabled = False
     else:
         thr_cfg.enabled = True
