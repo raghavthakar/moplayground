@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --time=2-00:00:00
+#SBATCH --time=0-08:00:00
 # jax[cuda13] dropped Volta (V100 / sm_70) support, so target H100 (dgxh) and
 # A100 (ampere, sm_80) only.
 #SBATCH --partition=dgxh,ampere
@@ -10,7 +10,9 @@
 #SBATCH --output=cliff-walker_%j.out
 
 # Sequential sparsity-cliff search for MOWalker (100M probes, early abort).
-# Submit all domains in parallel:
+# 8h GPU slot — not 2 days. If the job times out, resubmit the same script
+# (--resume skips finished probes in cliff.json).
+# Submit all domains in parallel (one 8h job each):
 #   mkdir -p logs
 #   sbatch scripts/slurm/cliff_search_walker.sh
 #   sbatch scripts/slurm/cliff_search_hopper.sh
@@ -38,4 +40,4 @@ unset WANDB_MODE
 echo "Host: $(hostname)  Job: ${SLURM_JOB_ID:-local}  Domain: ${DOMAIN}"
 nvidia-smi -L || true
 
-"${ENV_DIR}/bin/python" -m scripts.cliff_search --domain "${DOMAIN}"
+"${ENV_DIR}/bin/python" -m scripts.cliff_search --domain "${DOMAIN}" --resume

@@ -17,6 +17,11 @@ nadir so negative energy (walker/cheetah) still contributes. A probe is
 < 2% of dense HV. Collapsed probes abort after a few dead evals.
 
 Writes ``<save-dir>/cliff.json``. W&B group is ``cliff-search-<domain>-100m``.
+
+Jobs are meant to fit an 8h GPU slot (not a multi-day reservation). Each
+MORLAX probe is a full run, but collapsed ones abort after a few dead evals.
+If the wallclock is hit, resubmit the same script with ``--resume``; finished
+probes in ``cliff.json`` are skipped.
 """
 
 from __future__ import annotations
@@ -223,6 +228,8 @@ def main():
     parser.add_argument('--confirm-seeds', default='0,1,2')
     parser.add_argument('--abort-min-steps', type=int, default=15_000_000)
     parser.add_argument('--abort-consecutive', type=int, default=3)
+    parser.add_argument('--resume', action='store_true',
+                        help='Skip dense/probes already recorded in cliff.json.')
     args = parser.parse_args()
 
     wandb, mop, mm, StopTraining, compute_pareto_statistics = _import_training()
@@ -233,6 +240,7 @@ def main():
     group = args.group or f'cliff-search-{args.domain}-100m'
     confirm_seeds = [int(x) for x in args.confirm_seeds.split(',') if x.strip() != '']
     n_obj = len(base.env_config.reward.optimization.objectives)
+    cliff_path = save_dir / 'cliff.json'
     result = {
         'domain': args.domain,
         'base': base_path,
@@ -245,34 +253,58 @@ def main():
         'confirm': [],
         'timestamp': time.strftime('%Y-%m-%d %H:%M:%S %Z'),
     }
+    if args.resume and cliff_path.is_file():
+        result.update(json.loads(cliff_path.read_text()))
+        result.setdefault('probes', [])
+        result.setdefault('confirm', [])
+        print(f'[cliff] resumed from {cliff_path} '
+              f'({len(result["probes"])} probes, {len(result["confirm"])} confirm)')
 
     print(f'=== Cliff search: {args.domain}  group={group}  T={args.timesteps} ===')
 
+    def _probe_key(phase, p, seed):
+        return (phase, round(float(p), 8), int(seed))
+
+    def _cached(phase, p, seed):
+        key = _probe_key(phase, p, seed)
+        for row in result.get('probes', []) + result.get('confirm', []):
+            if _probe_key(row['phase'], row['p'], row['seed']) == key:
+                return row
+        return None
+
     # --- 1. Dense scale ---
-    dense_cfg = apply_run_overrides(
-        base, name=f'{args.domain}-dense-seed0', save_dir=save_dir,
-        seed=0, timesteps=args.timesteps, num_evals=args.num_evals,
-        thresholds=[0.0] * n_obj, enabled=False,
-    )
-    print('\n===== Dense calibration (1 seed, gating off) =====')
-    dense_rec = run_morlax(
-        wandb, mop, mm, StopTraining, compute_pareto_statistics,
-        dense_cfg, group, 'dense',
-        {'domain': args.domain, 'phase': 'dense', 'p': 0.0, 'seed': 0},
-        hv_ref=None, abort=None,
-    )
-    nadir, ideal, hv_ref, _F = scale_from_paretos(dense_rec['paretos'])
-    dense_hv = hv_of(
-        dense_rec['paretos'][-1], hv_ref, compute_pareto_statistics,
-    )
-    zero_hv = hv_of(np.zeros((1, n_obj)), hv_ref, compute_pareto_statistics)
-    result.update({
-        'nadir': nadir, 'ideal': ideal, 'hv_ref_point_max': hv_ref,
-        'dense_hv': dense_hv, 'zero_hv': zero_hv,
-    })
-    print(f'[cliff] nadir={nadir}  ideal={ideal}  hv_ref={hv_ref}')
-    print(f'[cliff] dense_hv={dense_hv:.4g}  zero_hv={zero_hv:.4g}')
-    (save_dir / 'cliff.json').write_text(json.dumps(result, indent=2) + '\n')
+    if result.get('nadir') is not None and result.get('ideal') is not None:
+        nadir = result['nadir']
+        ideal = result['ideal']
+        hv_ref = result['hv_ref_point_max']
+        dense_hv = result['dense_hv']
+        zero_hv = result['zero_hv']
+        print('[cliff] dense scale already in cliff.json; skipping dense run.')
+    else:
+        dense_cfg = apply_run_overrides(
+            base, name=f'{args.domain}-dense-seed0', save_dir=save_dir,
+            seed=0, timesteps=args.timesteps, num_evals=args.num_evals,
+            thresholds=[0.0] * n_obj, enabled=False,
+        )
+        print('\n===== Dense calibration (1 seed, gating off) =====')
+        dense_rec = run_morlax(
+            wandb, mop, mm, StopTraining, compute_pareto_statistics,
+            dense_cfg, group, 'dense',
+            {'domain': args.domain, 'phase': 'dense', 'p': 0.0, 'seed': 0},
+            hv_ref=None, abort=None,
+        )
+        nadir, ideal, hv_ref, _F = scale_from_paretos(dense_rec['paretos'])
+        dense_hv = hv_of(
+            dense_rec['paretos'][-1], hv_ref, compute_pareto_statistics,
+        )
+        zero_hv = hv_of(np.zeros((1, n_obj)), hv_ref, compute_pareto_statistics)
+        result.update({
+            'nadir': nadir, 'ideal': ideal, 'hv_ref_point_max': hv_ref,
+            'dense_hv': dense_hv, 'zero_hv': zero_hv,
+        })
+        print(f'[cliff] nadir={nadir}  ideal={ideal}  hv_ref={hv_ref}')
+        print(f'[cliff] dense_hv={dense_hv:.4g}  zero_hv={zero_hv:.4g}')
+        cliff_path.write_text(json.dumps(result, indent=2) + '\n')
 
     abort = {
         'min_steps': args.abort_min_steps,
@@ -282,6 +314,10 @@ def main():
     }
 
     def probe(p, seed, phase):
+        cached = _cached(phase, p, seed)
+        if cached is not None:
+            print(f'[cliff] skip cached {phase} p={p:g} seed={seed} hv={cached.get("hv")}')
+            return cached
         T = thresholds_from_p(nadir, ideal, p)
         tag = 'x'.join(f'{t:g}' for t in T)
         name = f'{args.domain}-{phase}-p={p:g}-thr={tag}-seed={seed}'
@@ -309,71 +345,71 @@ def main():
             'steps': rec['steps'][-1] if rec['steps'] else 0,
         }
         print(f'[cliff] -> hv={rec["final_hv"]:.4g} collapsed={collapsed} aborted={rec["aborted"]}')
+        bucket = 'confirm' if str(phase).startswith('confirm') else 'probes'
+        result[bucket].append(row)
+        cliff_path.write_text(json.dumps(result, indent=2) + '\n')
         return row
 
     # --- 2. Geometric scan + log bisection ---
-    ps = geometric_ps(args.p_min, args.p_max, args.p_factor)
-    print(f'[cliff] geometric p grid ({len(ps)}): ' + ', '.join(f'{p:.4g}' for p in ps))
-    p_alive = None
-    p_dead = None
-    for p in ps:
-        row = probe(p, seed=0, phase='probe')
-        result['probes'].append(row)
-        (save_dir / 'cliff.json').write_text(json.dumps(result, indent=2) + '\n')
-        if row['collapsed']:
-            p_dead = p
-            break
-        p_alive = p
-    if p_dead is None:
-        print('[cliff] no collapse up to p_max; treating p_max as still-alive.')
-        p_alive = ps[-1]
-        p_dead = ps[-1]
-    elif p_alive is None:
-        print('[cliff] collapsed at p_min; no fully-alive p found.')
-        p_alive = args.p_min
-        # still bisect toward 0 to see if anything lives
-        lo, hi = max(args.p_min / (args.p_factor ** 2), 1e-4), p_dead
-        for i in range(args.n_bisect):
-            mid = math.exp(0.5 * (math.log(lo) + math.log(hi)))
-            row = probe(mid, seed=0, phase='probe')
-            result['probes'].append(row)
-            (save_dir / 'cliff.json').write_text(json.dumps(result, indent=2) + '\n')
-            if row['collapsed']:
-                hi = mid
-                p_dead = mid
-            else:
-                lo = mid
-                p_alive = mid
-        p_dead = hi
+    if result.get('p_alive') is not None and result.get('p_cliff') is not None:
+        p_alive = result['p_alive']
+        p_dead = result['p_cliff']
+        print(f'[cliff] scan already finished: p_alive={p_alive:g} p_cliff={p_dead:g}')
     else:
-        lo, hi = p_alive, p_dead
-        for i in range(args.n_bisect):
-            if hi <= lo * 1.02:
-                break
-            mid = math.exp(0.5 * (math.log(lo) + math.log(hi)))
-            row = probe(mid, seed=0, phase='probe')
-            result['probes'].append(row)
-            (save_dir / 'cliff.json').write_text(json.dumps(result, indent=2) + '\n')
+        ps = geometric_ps(args.p_min, args.p_max, args.p_factor)
+        print(f'[cliff] geometric p grid ({len(ps)}): ' + ', '.join(f'{p:.4g}' for p in ps))
+        p_alive = None
+        p_dead = None
+        for p in ps:
+            row = probe(p, seed=0, phase='probe')
             if row['collapsed']:
-                hi = mid
-                p_dead = mid
-            else:
-                lo = mid
-                p_alive = mid
+                p_dead = p
+                break
+            p_alive = p
+        if p_dead is None:
+            print('[cliff] no collapse up to p_max; treating p_max as still-alive.')
+            p_alive = ps[-1]
+            p_dead = ps[-1]
+        elif p_alive is None:
+            print('[cliff] collapsed at p_min; no fully-alive p found.')
+            p_alive = args.p_min
+            lo, hi = max(args.p_min / (args.p_factor ** 2), 1e-4), p_dead
+            for i in range(args.n_bisect):
+                mid = math.exp(0.5 * (math.log(lo) + math.log(hi)))
+                row = probe(mid, seed=0, phase='probe')
+                if row['collapsed']:
+                    hi = mid
+                    p_dead = mid
+                else:
+                    lo = mid
+                    p_alive = mid
+            p_dead = hi
+        else:
+            lo, hi = p_alive, p_dead
+            for i in range(args.n_bisect):
+                if hi <= lo * 1.02:
+                    break
+                mid = math.exp(0.5 * (math.log(lo) + math.log(hi)))
+                row = probe(mid, seed=0, phase='probe')
+                if row['collapsed']:
+                    hi = mid
+                    p_dead = mid
+                else:
+                    lo = mid
+                    p_alive = mid
 
-    result['p_alive'] = p_alive
-    result['p_cliff'] = p_dead
-    result['thresholds_alive'] = thresholds_from_p(nadir, ideal, p_alive)
-    result['thresholds_cliff'] = thresholds_from_p(nadir, ideal, p_dead)
+        result['p_alive'] = p_alive
+        result['p_cliff'] = p_dead
+        result['thresholds_alive'] = thresholds_from_p(nadir, ideal, p_alive)
+        result['thresholds_cliff'] = thresholds_from_p(nadir, ideal, p_dead)
+        cliff_path.write_text(json.dumps(result, indent=2) + '\n')
 
     # --- 3. Confirm ---
     for p, label in ((p_alive, 'confirm-alive'), (p_dead, 'confirm-cliff')):
         for seed in confirm_seeds:
             row = probe(p, seed=seed, phase=label)
-            result['confirm'].append(row)
-            (save_dir / 'cliff.json').write_text(json.dumps(result, indent=2) + '\n')
 
-    (save_dir / 'cliff.json').write_text(json.dumps(result, indent=2) + '\n')
+    cliff_path.write_text(json.dumps(result, indent=2) + '\n')
     print('\n===== Cliff search done =====')
     print(json.dumps({
         k: result[k] for k in (

@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --time=2-00:00:00
+#SBATCH --time=0-08:00:00
 #SBATCH --partition=dgxh,ampere
 #SBATCH --mem=32G
 #SBATCH -c 12
@@ -28,4 +28,4 @@ unset WANDB_MODE
 echo "Host: $(hostname)  Job: ${SLURM_JOB_ID:-local}  Domain: ${DOMAIN}"
 nvidia-smi -L || true
 
-"${ENV_DIR}/bin/python" -m scripts.cliff_search --domain "${DOMAIN}"
+"${ENV_DIR}/bin/python" -m scripts.cliff_search --domain "${DOMAIN}" --resume
