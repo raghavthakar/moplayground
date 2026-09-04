@@ -24,6 +24,7 @@ class MOTrainingPlottingInfo:
     labels        : list = field(default_factory=list)
     archive_paretos : list = field(default_factory=list)
     thresholds    : list = field(default_factory=list)
+    hv_ref_point_max : list | None = None
     
     def save(self, save_dir, create_time=True):
         pd.DataFrame(
@@ -69,6 +70,7 @@ def _log_mo_wandb(
     labels,
     elapsed_s: float,
     reward_plot_html: str | None = None,
+    ref_point_max=None,
 ):
     """Log MORL eval scalars, training losses, and a per-policy performance table."""
     rewards = np.asarray(rewards, dtype=float)
@@ -85,7 +87,7 @@ def _log_mo_wandb(
 
     nd_idx = set(int(i) for i in get_nondominated(rewards))
     try:
-        stats = compute_pareto_statistics(rewards)  # default ref_point_max = 0
+        stats = compute_pareto_statistics(rewards, ref_point_max=ref_point_max)
     except Exception as e:
         print(f'Warning: could not compute Pareto statistics: {e}')
         stats = None
@@ -256,6 +258,7 @@ def plot_mo_progress(
             labels=training_data.labels,
             elapsed_s=elapsed_s,
             reward_plot_html=archive_svg if archive_svg is not None else svg,
+            ref_point_max=training_data.hv_ref_point_max,
         )
 
 def default_coloring(tradeoff):

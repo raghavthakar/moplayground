@@ -51,6 +51,11 @@ Metrics = types.Metrics
 _PMAP_AXIS_NAME = 'i'
 
 
+class StopTraining(Exception):
+    """Raised from ``progress_fn`` to end a run early (e.g. collapsed HV)."""
+
+
+
 @flax.struct.dataclass
 class MOTrainingState:
     """Contains training state for the learner."""
@@ -607,6 +612,7 @@ def train(
     training_metrics = {}
     training_walltime = 0
     current_step = 0
+    stopped_early = False
 
     # Run initial eval
     metrics = {}
@@ -619,7 +625,10 @@ def train(
             training_metrics={},
         )
         logging.info(metrics)
-        progress_fn(0, metrics)
+        try:
+            progress_fn(0, metrics)
+        except StopTraining:
+            print('StopTraining at step 0 (ignored; need warmup before abort).')
 
     # Run initial policy_params_fn.
     params = _unpmap((
@@ -677,13 +686,26 @@ def train(
                     training_metrics,
                 )
             logging.info(metrics)
-            progress_fn(current_step, metrics)
+            try:
+                progress_fn(current_step, metrics)
+            except StopTraining:
+                print(
+                    f'StopTraining at step {current_step} '
+                    f'(requested {num_timesteps}); ending run.'
+                )
+                stopped_early = True
+                break
 
     total_steps = current_step
-    if not total_steps >= num_timesteps:
+    if not total_steps >= num_timesteps and not stopped_early:
         raise AssertionError(
             f'Total steps {total_steps} is less than `num_timesteps`='
             f' {num_timesteps}.'
+        )
+    if stopped_early:
+        print(
+            f'Training ended early at {total_steps} steps '
+            f'(num_timesteps={num_timesteps}).'
         )
 
     # If there was no mistakes the training_state should still be identical on all
