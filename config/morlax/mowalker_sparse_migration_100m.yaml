@@ -1,0 +1,108 @@
+# 100M BC migration on sparse MOWalker (run vs energy).
+#
+# Thresholds are set by the launcher (scripts/slurm/migration_sweep_walker_100m.sh).
+# Cliff-search collapse ~[271, 7] (energy cliff is near 0, so energy uses 10s).
+# Round grid:
+#   200x0    degraded / below the automated cliff
+#   250x10   at the cliff
+#   300x50   past cliff
+#
+# [200, 0] is a real gate (run >= 200, energy >= 0). Exactly [0, 0] would
+# disable gating; a zero on only one objective does not.
+#
+# Budget splits are set by scripts/migration_sweep.py (--total-m 100).
+# Default splits: e20-f80 .. e50-f50 (step 5M) + baseline-100m.
+name: morlax-walker-sparse-migrate-100m
+save_dir: /nfs/hpc/share/thakarr/SMORL/results/migration_budget_sweep_walker_100m
+description: '100M explore(IntrinsicPPO)->BC->finetune(MORLAX) on sparse MOWalker'
+algorithm: migration
+env: MOWalker
+backend: np
+mo2so:
+  enabled: false
+  weighting: [0.5, 0.5]
+env_config:
+  ctrl_dt: 0.01
+  sim_dt: 0.005
+  action_scale: 3.0
+  history_length: 5
+  ideal_base_height: 0.5
+  ideal_base_vel: 0.5
+  min_base_height: 0.3
+  add_random_joint_state: false
+  add_random_pitch: false
+  reward:
+    weights:
+      run:        1.0
+      energy:     1.0
+      alive:      1.0
+      done:       0
+    sigmas:
+      height:     0.01
+      speed:      0.01
+      energy:     0.1
+      imitation:  0.03
+    optimization:
+      objectives:        [['run'], ['energy']]
+      shared_objectives: []
+      labels:            ['Running Speed', 'Energy Efficiency']
+    episodic_threshold:
+      enabled: true
+      thresholds: [250.0, 10.0]
+  termination:
+    enabled: true
+    base_height: 0.2
+learning_params:
+  base_ppo_params:
+    action_repeat: 1
+    batch_size: 32
+    clipping_epsilon: 0.2
+    deterministic_eval: true
+    discounting: 0.99
+    entropy_cost: 0.01
+    episode_length: 500
+    learning_rate: 0.000005
+    max_grad_norm: 1.0
+    normalize_observations: true
+    num_envs: 1024
+    num_evals: 21
+    num_minibatches: 32
+    num_timesteps: 100000000
+    num_updates_per_batch: 4
+    reward_scaling: 1.0
+    seed: 0
+    unroll_length: 30
+  intrinsic_ppo_params:
+    train_fn_params:
+      learning_rate: 0.0003
+    network_params:
+      policy_hidden_layer_sizes: [64, 64]
+      value_hidden_layer_sizes: [256, 256]
+    rnd_params:
+      hidden_layer_sizes: [256, 256]
+      output_size: 64
+      learning_rate: 0.0001
+      scale: 1.0
+  morlax_params:
+    train_fn_params:
+      alpha: 1.0
+      k: 8
+      sampling: sparse-heavytail
+      warmup_frac: 0.0
+    network_params:
+      hypertype: dual
+      hypersize: [128, 128]
+      num_features: 16
+      policy_hidden_layer_sizes: [64, 64]
+      value_hidden_layer_sizes:  [64, 64]
+migration_params:
+  explore_steps: 20000000
+  finetune_steps: 80000000
+  selection: nondominated
+  max_teachers: 0
+  demos:
+    num_episodes: 64
+  bc:
+    steps: 6000
+    batch_size: 512
+    lr: 0.0003

@@ -56,6 +56,10 @@ def parse_threshold(s):
     return [float(x.strip()) for x in s.split(',') if x.strip() != '']
 
 
+def threshold_tag(thresholds):
+    return 'x'.join(f'{t:g}' for t in thresholds)
+
+
 def apply_threshold(cfg, thresholds):
     thr_cfg = cfg.env_config.reward.episodic_threshold
     # Exactly-zero vector = dense (gating off). Negative thresholds are real
@@ -129,6 +133,8 @@ def run_cell(wandb, mop, mm, base_config, cell, group, save_dir, thresholds=None
     cfg.name = f"{cell['variant']}-seed{cell['seed']}"
     cfg.learning_params.base_ppo_params.seed = cell['seed']
     tags = [group, cell['variant'], f"seed{cell['seed']}", cell['kind']]
+    if cell.get('threshold_tag'):
+        tags.append(f"thr={cell['threshold_tag']}")
 
     env, _ = mop.envs.create_environment(cfg, for_training=True)
     eval_env, _ = mop.envs.create_environment(cfg, for_training=True)
@@ -192,12 +198,15 @@ def main():
     seeds = [int(x) for x in args.seeds.split(',') if x.strip() != '']
     cells = build_matrix(seeds, args.total_m, splits_m)
     if thresholds is not None:
+        tag = threshold_tag(thresholds)
         for c in cells:
             c['thresholds'] = thresholds
+            c['threshold_tag'] = tag
 
     if args.list:
+        thr = f'  threshold={args.threshold}' if args.threshold else ''
         print(f'Experiment: {args.group}  budget={args.total_m}M  ({len(cells)} runs; '
-              f'Slurm --array=0-{len(cells) - 1})')
+              f'Slurm --array=0-{len(cells) - 1}){thr}')
         for i, c in enumerate(cells):
             print(f"  [{i:2d}] {c['variant']:<14} seed={c['seed']}  "
                   f"explore={c['explore_m']}M finetune={c['finetune_m']}M ({c['kind']})")
