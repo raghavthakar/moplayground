@@ -14,7 +14,10 @@ Thresholds are range-normalized:
 Hypervolume uses a maximization-space reference slightly below the dense
 nadir so negative energy (walker/cheetah) still contributes. A probe is
 *collapsed* if HV is no better than an all-zero front (gated plateau) or
-< 2% of dense HV. Collapsed probes abort after a few dead evals.
+below ``--collapse-frac`` of dense HV (default 2%). Collapsed probes abort
+after a few dead evals past ``--abort-min-steps``. The 2% floor can miss a
+real drop that still sits above that (Cheetah's ~15x HV drop was ~4% of
+dense); pass a larger fraction for a relaxed search.
 
 Writes ``<save-dir>/cliff.json``. W&B group is ``cliff-search-<domain>-100m``.
 
@@ -94,13 +97,13 @@ def hv_of(rewards, ref_point_max, compute_pareto_statistics):
     return hv
 
 
-def is_collapsed(hv, zero_hv, dense_hv):
+def is_collapsed(hv, zero_hv, dense_hv, frac=0.02):
     if hv != hv or hv is None:  # NaN
         return True
     if zero_hv is not None and np.isfinite(zero_hv) and hv <= max(zero_hv * 2.0, 1e-8):
         return True
     if dense_hv is not None and np.isfinite(dense_hv) and dense_hv > 0:
-        if hv < 0.02 * dense_hv:
+        if hv < float(frac) * dense_hv:
             return True
     return False
 
@@ -189,9 +192,10 @@ def run_morlax(
         if int(num_steps) < min_steps:
             abort_hits[0] = 0
             return
-        if is_collapsed(hv, zero_hv, dense_hv):
+        frac = float(abort.get('collapse_frac', 0.02))
+        if is_collapsed(hv, zero_hv, dense_hv, frac=frac):
             abort_hits[0] += 1
-            print(f'[cliff] collapsed eval {abort_hits[0]}/{need}')
+            print(f'[cliff] collapsed eval {abort_hits[0]}/{need} (frac={frac:g})')
             if abort_hits[0] >= need:
                 recorder['aborted'] = True
                 raise StopTraining()
@@ -226,8 +230,14 @@ def main():
     parser.add_argument('--n-bisect', type=int, default=5,
                         help='Log-space bisections after the geometric bracket.')
     parser.add_argument('--confirm-seeds', default='0,1,2')
-    parser.add_argument('--abort-min-steps', type=int, default=15_000_000)
-    parser.add_argument('--abort-consecutive', type=int, default=3)
+    parser.add_argument('--abort-min-steps', type=int, default=15_000_000,
+                        help='Do not abort collapsed probes before this many env steps.')
+    parser.add_argument('--abort-consecutive', type=int, default=3,
+                        help='Consecutive collapsed evals (after abort-min-steps) before abort.')
+    parser.add_argument('--collapse-frac', type=float, default=0.02,
+                        help='HV < this fraction of dense HV counts as collapsed. '
+                             '0.02 missed Cheetah\'s ~15x drop (~4%% of dense); use 0.10 '
+                             'to treat that as a real cliff.')
     parser.add_argument('--resume', action='store_true',
                         help='Skip dense/probes already recorded in cliff.json.')
     args = parser.parse_args()
@@ -251,6 +261,9 @@ def main():
         'n_bisect': args.n_bisect,
         'probes': [],
         'confirm': [],
+        'abort_min_steps': args.abort_min_steps,
+        'abort_consecutive': args.abort_consecutive,
+        'collapse_frac': args.collapse_frac,
         'timestamp': time.strftime('%Y-%m-%d %H:%M:%S %Z'),
     }
     if args.resume and cliff_path.is_file():
@@ -311,7 +324,10 @@ def main():
         'consecutive': args.abort_consecutive,
         'dense_hv': dense_hv,
         'zero_hv': zero_hv,
+        'collapse_frac': args.collapse_frac,
     }
+    print(f'[cliff] abort min_steps={args.abort_min_steps} consecutive={args.abort_consecutive} '
+          f'collapse_frac={args.collapse_frac:g}')
 
     def probe(p, seed, phase):
         cached = _cached(phase, p, seed)
@@ -333,11 +349,14 @@ def main():
             {
                 'domain': args.domain, 'phase': phase, 'p': float(p),
                 'seed': int(seed), 'thresholds': T,
+                'collapse_frac': args.collapse_frac,
             },
             hv_ref=hv_ref,
             abort=abort if phase in ('probe', 'confirm-cliff') else None,
         )
-        collapsed = is_collapsed(rec['final_hv'], zero_hv, dense_hv)
+        collapsed = is_collapsed(
+            rec['final_hv'], zero_hv, dense_hv, frac=args.collapse_frac,
+        )
         row = {
             'p': float(p), 'thresholds': T, 'seed': int(seed),
             'phase': phase, 'hv': rec['final_hv'],
