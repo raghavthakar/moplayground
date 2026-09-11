@@ -115,6 +115,9 @@ def build_bc_init(config, env, explore_dir, run=None):
     action_repeat = int(config.learning_params.base_ppo_params.action_repeat)
     thr_cfg = config.env_config.reward.get('episodic_threshold', None)
     thresholds = list(thr_cfg.thresholds) if thr_cfg and thr_cfg.get('enabled') else None
+    hv_ref = config.get('hv_ref_point_max', None)
+    if hv_ref is not None:
+        hv_ref = [float(x) for x in hv_ref]
 
     teachers_info = select_archive_teachers(
         explore_dir,
@@ -226,7 +229,7 @@ def build_bc_init(config, env, explore_dir, run=None):
     cold_eval = _safe_eval('cold', lambda: bc.evaluate_hypernetwork(
         networks, normalizer, cold_params, demo_env,
         all_prefs, episode_length=episode_length, action_repeat=action_repeat,
-        seed=seed, thresholds=thresholds,
+        seed=seed, thresholds=thresholds, ref_point_max=hv_ref,
     ))
     bc._log_eval_report(run, 'bc/cold/eval', cold_eval, step=0)
 
@@ -245,13 +248,13 @@ def build_bc_init(config, env, explore_dir, run=None):
     post_eval = _safe_eval('post_bc', lambda: bc.evaluate_hypernetwork(
         networks, normalizer, hypernet_params, demo_env,
         all_prefs, episode_length=episode_length, action_repeat=action_repeat,
-        seed=seed + 1, thresholds=thresholds,
+        seed=seed + 1, thresholds=thresholds, ref_point_max=hv_ref,
     ))
     teacher_eval = _safe_eval('teachers', lambda: bc.evaluate_hypernetwork(
         networks, normalizer, hypernet_params, demo_env,
         teacher_prefs, episode_length=episode_length, action_repeat=action_repeat,
         seed=seed + 2, thresholds=thresholds,
-        teacher_objectives=teacher_objs,
+        teacher_objectives=teacher_objs, ref_point_max=hv_ref,
     ))
     bc._log_eval_report(run, 'bc/eval', post_eval, step=bc_steps)
     bc._log_eval_report(run, 'bc/eval/teachers', teacher_eval, step=bc_steps)

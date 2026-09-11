@@ -228,13 +228,23 @@ def train_policy(
     thresholds = None
     if thr_cfg is not None and thr_cfg.get('enabled', False):
         thresholds = list(thr_cfg.thresholds)
+    # Optional maximization-space HV reference. Absent => origin (legacy).
+    # Prefer a dense-calibrated nadir margin when objectives can be negative
+    # (walker energy, ant velocity), else origin HV zeros those points.
+    hv_ref = config.get('hv_ref_point_max', None)
+    if hv_ref is not None:
+        hv_ref = [float(x) for x in hv_ref]
+        print(f'[train] HV ref_point_max={hv_ref}')
     training_data = mop.utils.plotting.MOTrainingPlottingInfo(
         start_time = time.time(),
         labels = plot_labels,
         thresholds = list(thresholds) if thresholds is not None else [],
+        hv_ref_point_max = hv_ref,
     )
     archive = (
-        ExtrinsicArchive(thresholds, output_dir, plot_labels)
+        ExtrinsicArchive(
+            thresholds, output_dir, plot_labels, hv_ref_point_max=hv_ref,
+        )
         if thresholds is not None
         else None
     )

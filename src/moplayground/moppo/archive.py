@@ -26,11 +26,16 @@ class ExtrinsicArchive:
         thresholds: Sequence[float],
         output_dir: Path,
         labels: Optional[Sequence[str]] = None,
+        hv_ref_point_max: Optional[Sequence[float]] = None,
     ):
         self.thresholds = np.asarray(thresholds, dtype=float)
         self.output_dir = Path(output_dir)
         self.ckpt_root = self.output_dir / 'archive' / 'ckpts'
         self.labels = [str(x) for x in (labels or [])]
+        self.hv_ref_point_max = (
+            None if hv_ref_point_max is None
+            else [float(x) for x in hv_ref_point_max]
+        )
         self.returns: list[np.ndarray] = []
         self.steps: list[int] = []
         self.ckpt_steps: list[int] = []
@@ -99,7 +104,9 @@ class ExtrinsicArchive:
         nd = get_nondominated(F)
         metrics['archive/num_nondominated'] = int(len(nd))
         try:
-            stats = compute_pareto_statistics(F)
+            stats = compute_pareto_statistics(
+                F, ref_point_max=self.hv_ref_point_max,
+            )
             metrics['archive/hypervolume'] = float(stats.hypervolume)
             metrics['archive/sparsity'] = float(stats.sparsity)
         except Exception as e:

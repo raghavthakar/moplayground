@@ -56,6 +56,10 @@ def parse_threshold(s):
     return [float(x.strip()) for x in s.split(',') if x.strip() != '']
 
 
+def parse_hv_ref(s):
+    return [float(x.strip()) for x in s.split(',') if x.strip() != '']
+
+
 def threshold_tag(thresholds):
     return 'x'.join(f'{t:g}' for t in thresholds)
 
@@ -69,6 +73,11 @@ def apply_threshold(cfg, thresholds):
     else:
         thr_cfg.enabled = True
         thr_cfg.thresholds = list(thresholds)
+
+
+def apply_hv_ref(cfg, hv_ref):
+    """Set maximization-space HV reference (dense-nadir margin)."""
+    cfg.hv_ref_point_max = [float(x) for x in hv_ref]
 
 
 def build_matrix(seeds, total_m, splits_m):
@@ -125,16 +134,20 @@ def _write_meta(root, cfg, cell, group, run_names):
     (run_dir / 'run_meta.json').write_text(json.dumps(meta, indent=2) + '\n')
 
 
-def run_cell(wandb, mop, mm, base_config, cell, group, save_dir, thresholds=None):
+def run_cell(wandb, mop, mm, base_config, cell, group, save_dir, thresholds=None, hv_ref=None):
     cfg = copy.deepcopy(base_config)
     if thresholds is not None:
         apply_threshold(cfg, thresholds)
+    if hv_ref is not None:
+        apply_hv_ref(cfg, hv_ref)
     cfg.save_dir = save_dir
     cfg.name = f"{cell['variant']}-seed{cell['seed']}"
     cfg.learning_params.base_ppo_params.seed = cell['seed']
     tags = [group, cell['variant'], f"seed{cell['seed']}", cell['kind']]
     if cell.get('threshold_tag'):
         tags.append(f"thr={cell['threshold_tag']}")
+    if cell.get('hv_ref') is not None:
+        tags.append('hvref')
 
     env, _ = mop.envs.create_environment(cfg, for_training=True)
     eval_env, _ = mop.envs.create_environment(cfg, for_training=True)
@@ -185,6 +198,9 @@ def main():
                         help='Semicolon-separated explore,finetune pairs in M, e.g. "20,80;25,75".')
     parser.add_argument('--threshold', type=str, default=None,
                         help="Episodic unlock thresholds, e.g. '50,50' or '100,100'.")
+    parser.add_argument('--hv-ref', type=str, default=None,
+                        help="Maximization-space HV reference, e.g. '-585,-465'. "
+                             "Absent => use config.hv_ref_point_max or origin.")
     parser.add_argument('--seeds', default=','.join(map(str, DEFAULT_SEEDS)), help='CSV of seeds.')
     parser.add_argument('--index', type=int, default=None, help='Run only this cell (Slurm array id).')
     parser.add_argument('--list', action='store_true', help='Print the run matrix and exit.')
@@ -195,6 +211,7 @@ def main():
 
     splits_m = parse_splits(args.splits, args.total_m) if args.splits else default_splits_for(args.total_m)
     thresholds = parse_threshold(args.threshold) if args.threshold else None
+    hv_ref = parse_hv_ref(args.hv_ref) if args.hv_ref else None
     seeds = [int(x) for x in args.seeds.split(',') if x.strip() != '']
     cells = build_matrix(seeds, args.total_m, splits_m)
     if thresholds is not None:
@@ -202,11 +219,15 @@ def main():
         for c in cells:
             c['thresholds'] = thresholds
             c['threshold_tag'] = tag
+    if hv_ref is not None:
+        for c in cells:
+            c['hv_ref'] = hv_ref
 
     if args.list:
         thr = f'  threshold={args.threshold}' if args.threshold else ''
+        href = f'  hv_ref={args.hv_ref}' if args.hv_ref else ''
         print(f'Experiment: {args.group}  budget={args.total_m}M  ({len(cells)} runs; '
-              f'Slurm --array=0-{len(cells) - 1}){thr}')
+              f'Slurm --array=0-{len(cells) - 1}){thr}{href}')
         for i, c in enumerate(cells):
             print(f"  [{i:2d}] {c['variant']:<14} seed={c['seed']}  "
                   f"explore={c['explore_m']}M finetune={c['finetune_m']}M ({c['kind']})")
@@ -214,6 +235,11 @@ def main():
 
     wandb, mop, mm = _import_training_deps()
     base_config = mop.utils.read_config(args.base)
+    # YAML may already define hv_ref_point_max; CLI overrides when given.
+    if hv_ref is None and base_config.get('hv_ref_point_max', None) is not None:
+        hv_ref = [float(x) for x in base_config.hv_ref_point_max]
+        for c in cells:
+            c['hv_ref'] = hv_ref
 
     selected = cells if args.index is None else [cells[args.index]]
     if args.index is not None and not (0 <= args.index < len(cells)):
@@ -233,7 +259,10 @@ def main():
         print(f'\n===== Running {name} ({cell["kind"]}, '
               f'explore={cell["explore_m"]}M finetune={cell["finetune_m"]}M) =====')
         try:
-            run_cell(wandb, mop, mm, base_config, cell, args.group, args.save_dir, thresholds)
+            run_cell(
+                wandb, mop, mm, base_config, cell, args.group, args.save_dir,
+                thresholds=thresholds, hv_ref=hv_ref,
+            )
             results.append((name, 'ok'))
         except Exception as e:
             print(f'[FAIL] {name}: {e}')

@@ -74,6 +74,7 @@ def evaluate_hypernetwork(
     thresholds: list[float] | None = None,
     teacher_objectives: list[np.ndarray] | None = None,
     num_eval_envs: int = 64,
+    ref_point_max: list[float] | None = None,
 ) -> dict:
     """Roll out a hypernetwork at fixed preferences; return summary metrics.
 
@@ -112,7 +113,7 @@ def evaluate_hypernetwork(
     directives = np.stack(prefs, axis=0).astype(float)
 
     try:
-        stats = compute_pareto_statistics(rewards)
+        stats = compute_pareto_statistics(rewards, ref_point_max=ref_point_max)
         hv = float(stats.hypervolume)
         sparsity = float(stats.sparsity)
     except Exception:
