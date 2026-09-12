@@ -47,6 +47,14 @@ export XLA_PYTHON_CLIENT_PREALLOCATE=false
 # train.py logs to entity/project set in scripts/train.py.
 unset WANDB_MODE
 
+# W&B stages artifacts and caches them under $HOME by default, which fills the
+# 25G NFS home quota and then kills every later job with ENOSPC. Keep that
+# scratch on the group share instead.
+export WANDB_DATA_DIR=/nfs/hpc/share/thakarr/SMORL/wandb/data
+export WANDB_CACHE_DIR=/nfs/hpc/share/thakarr/SMORL/wandb/cache
+export WANDB_DIR=/nfs/hpc/share/thakarr/SMORL/wandb/runs
+mkdir -p "${WANDB_DATA_DIR}" "${WANDB_CACHE_DIR}" "${WANDB_DIR}"
+
 echo "Host: $(hostname)"
 echo "Job:  ${SLURM_JOB_ID:-local}"
 echo "Env:  ${ENV_DIR}"
