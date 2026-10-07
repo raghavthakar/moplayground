@@ -48,7 +48,7 @@ name = train_config['save_dir'] + '/' + train_config['name']
 run = mm.utils.logging.initialize_wandb(
     name    = name.replace('/', ''),
     entity  = 'raghavthakar-oregon-state-university',
-    project = 'SMORL',
+    project = 'SMORL-TMLR',
     config  = dict(train_config)
 )
 mop.learning.train_policy(train_config, env, eval_env, run)

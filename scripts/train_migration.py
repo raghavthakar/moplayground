@@ -42,7 +42,7 @@ def make_run(phase, group):
     return mm.utils.logging.initialize_wandb(
         name=f'{group}-{phase}'.replace('/', ''),
         entity='raghavthakar-oregon-state-university',
-        project='SMORL',
+        project='SMORL-TMLR',
         group=group.replace('/', ''),
         job_type=phase,
         config=dict(config),

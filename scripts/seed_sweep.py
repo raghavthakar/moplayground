@@ -75,7 +75,7 @@ def run_one(cfg, group):
     run = mm.utils.logging.initialize_wandb(
         name     = name.replace('/', ''),
         entity   = 'raghavthakar-oregon-state-university',
-        project  = 'SMORL',
+        project  = 'SMORL-TMLR',
         config   = dict(cfg),
         group    = group,
         job_type = 'seed',

@@ -26,7 +26,7 @@ import traceback
 from pathlib import Path
 
 ENTITY = 'raghavthakar-oregon-state-university'
-PROJECT = 'SMORL'
+PROJECT = 'SMORL-TMLR'
 
 # Defaults match the original 50M sweep (override via CLI for new experiments).
 DEFAULT_TOTAL_M = 50

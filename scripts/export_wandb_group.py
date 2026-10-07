@@ -22,7 +22,7 @@ import wandb
 
 
 ENTITY = 'raghavthakar-oregon-state-university'
-PROJECT = 'SMORL'
+PROJECT = 'SMORL-TMLR'
 
 # Scalars that decide the explorer verdict. Others are kept if present.
 KEEP_PREFIXES = (

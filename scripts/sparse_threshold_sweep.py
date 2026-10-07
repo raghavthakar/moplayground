@@ -83,7 +83,7 @@ def run_one(cfg):
     run = mm.utils.logging.initialize_wandb(
         name    = name.replace('/', ''),
         entity  = 'raghavthakar-oregon-state-university',
-        project = 'SMORL',
+        project = 'SMORL-TMLR',
         config  = dict(cfg),
         tags    = ['low-end sparsity sweep'],
     )

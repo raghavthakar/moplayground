@@ -40,7 +40,7 @@ from pathlib import Path
 import numpy as np
 
 ENTITY = 'raghavthakar-oregon-state-university'
-PROJECT = 'SMORL'
+PROJECT = 'SMORL-TMLR'
 
 DOMAINS = {
     'walker': 'config/morlax/mowalker_sparse.yaml',
