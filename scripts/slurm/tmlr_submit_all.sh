@@ -1,7 +1,7 @@
 #!/bin/bash
 # Submit the fresh TMLR 100M migration campaign (880 cells).
 # Run this on the HPC login node, from anywhere:
-#   bash /nfs/hpc/share/thakarr/SMORL/moplayground/scripts/slurm/tmlr_submit_all.sh
+#   bash /nfs/stak/users/thakarr/hpc-share/SMORL/moplayground/scripts/slurm/tmlr_submit_all.sh
 #
 # Resubmitting is safe: finished cells have run_meta.json and are skipped.
 

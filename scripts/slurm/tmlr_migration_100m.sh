@@ -32,13 +32,13 @@ if [[ -z "${DOMAIN:-}" ]]; then
     exit 1
 fi
 
-ENV_DIR=/nfs/hpc/share/thakarr/SMORL
-CODE_DIR=/nfs/hpc/share/thakarr/SMORL/moplayground
+ENV_DIR=/nfs/stak/users/thakarr/hpc-share/SMORL
+CODE_DIR=/nfs/stak/users/thakarr/hpc-share/SMORL/moplayground
 TOTAL_M=100
 SPLITS="20,80;25,75;30,70;35,65;40,60;45,55;50,50"
 SEEDS="0,1,2,3,4,5,6,7,8,9"
 N_CELLS=80
-ROOT=/nfs/hpc/share/thakarr/SMORL/results/tmlr_migration_100m
+ROOT=/nfs/stak/users/thakarr/hpc-share/SMORL/results/tmlr_migration_100m
 
 case "${DOMAIN}" in
     walker)
@@ -96,9 +96,9 @@ export CUDA_VISIBLE_DEVICES=0
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
 unset WANDB_MODE
 
-export WANDB_DATA_DIR=/nfs/hpc/share/thakarr/SMORL/wandb/data
-export WANDB_CACHE_DIR=/nfs/hpc/share/thakarr/SMORL/wandb/cache
-export WANDB_DIR=/nfs/hpc/share/thakarr/SMORL/wandb/runs
+export WANDB_DATA_DIR=/nfs/stak/users/thakarr/hpc-share/SMORL/wandb/data
+export WANDB_CACHE_DIR=/nfs/stak/users/thakarr/hpc-share/SMORL/wandb/cache
+export WANDB_DIR=/nfs/stak/users/thakarr/hpc-share/SMORL/wandb/runs
 mkdir -p "${WANDB_DATA_DIR}" "${WANDB_CACHE_DIR}" "${WANDB_DIR}" "${SAVE_DIR}"
 
 echo "Host: $(hostname)"
