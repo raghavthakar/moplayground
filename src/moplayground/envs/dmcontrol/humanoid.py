@@ -90,7 +90,7 @@ class MOHumanoid(MultiObjectiveBase):
 
     def _get_obs(self, data: mjx.Data, info: dict) -> jax.Array:
         del info  # Unused.
-        return self._np.concatenate([
+        obs = self._np.concatenate([
             self.joint_angles(data),
             self.head_height(data).reshape(1),
             self.extremities(data).ravel(),
@@ -98,6 +98,10 @@ class MOHumanoid(MultiObjectiveBase):
             HumanoidInterface.com_vel(data),
             data.qvel,
         ])
+        return {
+            'state': obs,
+            'privileged_state': obs,
+        }
     
     @property
     def action_size(self):
