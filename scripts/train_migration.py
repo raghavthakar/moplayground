@@ -36,7 +36,8 @@ env, _ = mop.envs.create_environment(config, for_training=True)
 eval_env, _ = mop.envs.create_environment(config, for_training=True)
 
 # One W&B run per phase (explore / bc / finetune), grouped so all three sit
-# together in the UI but keep independent step axes.
+# together in the UI. Finetune's logged step is explore env steps + finetune
+# step, so group charts share a total-frames axis with the baseline.
 def make_run(phase, group):
     return mm.utils.logging.initialize_wandb(
         name=f'{group}-{phase}'.replace('/', ''),

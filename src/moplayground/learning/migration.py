@@ -292,6 +292,10 @@ def train_migration(config, env, eval_env, run_factory=None):
     share a ``group`` (the run name) so they stay together in the UI.
     ``run_factory(phase, group)`` returns a fresh run (or ``None`` to skip W&B).
     Phases: ``explore``, ``bc``, ``finetune``.
+
+    The finetune run's W&B step is ``explore_env_steps + finetune_step``. Group
+    charts that plot baseline against finetune then share a total-frames axis.
+    Archive checkpoints stay on the phase-local step.
     """
     config = create_config_dict(config)
     mp = config.migration_params
@@ -308,7 +312,17 @@ def train_migration(config, env, eval_env, run_factory=None):
     explore_cfg.learning_params.base_ppo_params.num_timesteps = int(mp.explore_steps)
     print(f'=== Migration explore: {int(mp.explore_steps)} steps ===')
     explore_run = _phase_run('explore')
-    train_policy(explore_cfg, env, eval_env, run=explore_run)
+    explore_steps_seen = []
+    train_policy(
+        explore_cfg, env, eval_env, run=explore_run, steps_out=explore_steps_seen,
+    )
+    # Last progress callback is the trainer's final env-step count (it can
+    # overshoot the requested budget by one unroll). Fall back to the config
+    # budget if exploration exited before any eval.
+    explore_env_steps = (
+        int(explore_steps_seen[-1]) if explore_steps_seen else int(mp.explore_steps)
+    )
+    print(f'[migration] explore consumed {explore_env_steps} env steps')
     if explore_run is not None:
         explore_run.finish()
     explore_dir = Path(config.save_dir) / f'{base_name}/explore'
@@ -336,19 +350,28 @@ def train_migration(config, env, eval_env, run_factory=None):
         )
         return train_fn, network_factory
 
-    print(f'=== Migration finetune: {int(mp.finetune_steps)} steps ===')
+    print(
+        f'=== Migration finetune: {int(mp.finetune_steps)} steps '
+        f'(W&B step offset {explore_env_steps}) ==='
+    )
     finetune_run = _phase_run('finetune')
-    if finetune_run is not None and not bc_eval.get('skipped'):
-        post = bc_eval.get('post_bc', {})
-        finetune_run.log({
-            'migration/bc_init_hypervolume': post.get('hypervolume', float('nan')),
-            'migration/bc_init_forward_max': post.get('forward_max', float('nan')),
-            'migration/bc_init_jump_max': post.get('jump_max', float('nan')),
-            'migration/bc_init_unlock_both': post.get('unlock_both', float('nan')),
-            'migration/bc_hypervolume_gain': bc_eval.get('gain', {}).get('hypervolume', float('nan')),
-        }, step=0)
+    if finetune_run is not None:
+        payload = {'migration/explore_env_steps': explore_env_steps}
+        if not bc_eval.get('skipped'):
+            post = bc_eval.get('post_bc', {})
+            payload.update({
+                'migration/bc_init_hypervolume': post.get('hypervolume', float('nan')),
+                'migration/bc_init_forward_max': post.get('forward_max', float('nan')),
+                'migration/bc_init_jump_max': post.get('jump_max', float('nan')),
+                'migration/bc_init_unlock_both': post.get('unlock_both', float('nan')),
+                'migration/bc_hypervolume_gain': bc_eval.get('gain', {}).get(
+                    'hypervolume', float('nan')
+                ),
+            })
+        finetune_run.log(payload, step=explore_env_steps)
     result = train_policy(
-        finetune_cfg, env, eval_env, run=finetune_run, handle_params=handle_params
+        finetune_cfg, env, eval_env, run=finetune_run, handle_params=handle_params,
+        log_step_offset=explore_env_steps,
     )
     if finetune_run is not None:
         finetune_run.finish()

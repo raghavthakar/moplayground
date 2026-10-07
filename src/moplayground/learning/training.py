@@ -161,6 +161,8 @@ def train_policy(
     handle_params=None,
     warn_github_changes=False,
     progress_fn=None,
+    log_step_offset=0,
+    steps_out=None,
 ):
     """Train a policy on the given environment.
 
@@ -187,6 +189,13 @@ def train_policy(
             ``progress_fn(run, num_steps, metrics, save_dir, training_data)``
             to log/plot training progress. Defaults to
             ``mop.utils.plotting.plot_mo_progress``.
+        log_step_offset: Added only to the step forwarded to ``progress_fn``
+            (W&B and local progress plots). Archive checkpoints stay on the
+            phase-local env step so they still match the files the trainer
+            just wrote. Migration finetune passes the explore env-step count
+            so comparison charts share a total-frames axis with the baseline.
+        steps_out: (optional) List that receives each phase-local env step
+            passed into the progress callback, before ``log_step_offset``.
 
     Returns:
         Tuple ``(make_inference_fn, params)`` — a factory that builds an
@@ -250,21 +259,24 @@ def train_policy(
     )
 
     def _progress(num_steps, metrics):
+        phase_step = int(num_steps)
+        if steps_out is not None:
+            steps_out.append(phase_step)
         if archive is not None and 'reward' in metrics:
             n_new = archive.ingest(num_steps, metrics['reward'])
             archive.annotate(metrics)
             archive.save_csv(output_dir / 'archive.csv')
             archive.attach_checkpoint(
-                num_steps, output_dir / f'{int(num_steps):012d}'
+                num_steps, output_dir / f'{phase_step:012d}'
             )
             if n_new:
                 print(
-                    f'Archive: +{n_new} at step {int(num_steps)} '
+                    f'Archive: +{n_new} at step {phase_step} '
                     f'(size={archive.size}, hv={metrics.get("archive/hypervolume")})'
                 )
         progress_fn(
             run             = run,
-            num_steps       = num_steps,
+            num_steps       = phase_step + int(log_step_offset),
             metrics         = metrics,
             save_dir        = output_dir,
             training_data   = training_data

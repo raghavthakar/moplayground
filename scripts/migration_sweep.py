@@ -8,7 +8,8 @@ Every run consumes the same total sample budget (``--total-m``). Variants:
 
 BC head-start is logged to the ``bc`` W&B run (``bc/cold/eval/*``, ``bc/eval/*``)
 and on disk as ``<run>/bc_eval.json``. Finetune logs ``migration/bc_init_*`` at
-step 0 before any gradient update.
+the explore env-step count, then continues from there, so its x-axis is total
+frames (explore + finetune) rather than finetune frames alone.
 
 Usage
 -----
