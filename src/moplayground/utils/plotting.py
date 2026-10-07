@@ -1,3 +1,4 @@
+import json
 import matplotlib.pyplot as plt
 import numpy as np
 from dataclasses import dataclass, field
@@ -61,6 +62,33 @@ def _scalarize(value):
     return float(np.mean(arr))
 
 
+def _append_eval_front(save_dir: Path, num_steps: int, rewards, directives) -> Path:
+    """Append this eval's full return matrix so HV can be recomputed later.
+
+    One JSON object per line: ``step``, ``rewards`` (n_preferences, n_objectives),
+    and ``directives``. The nondominated subset is not stored separately; it
+    does not depend on the hypervolume reference, and the full matrix does.
+    """
+    path = Path(save_dir) / 'eval_fronts.jsonl'
+    record = {
+        'step': int(num_steps),
+        'rewards': np.asarray(rewards, dtype=float).tolist(),
+        'directives': np.asarray(directives, dtype=float).tolist(),
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open('a') as f:
+        f.write(json.dumps(record, separators=(',', ':')) + '\n')
+    return path
+
+
+def _upload_eval_front(run, path: Path) -> None:
+    """Upload the growing JSONL onto the W&B run (overwrites the previous copy)."""
+    try:
+        run.save(str(path), base_path=str(path.parent), policy='now', glob=False)
+    except Exception as exc:
+        print(f'Warning: could not upload {path.name} to wandb: {exc}')
+
+
 def _log_mo_wandb(
     run: wandb.Run,
     num_steps: int,
@@ -71,6 +99,7 @@ def _log_mo_wandb(
     elapsed_s: float,
     reward_plot_html: str | None = None,
     ref_point_max=None,
+    front_path: Path | None = None,
 ):
     """Log MORL eval scalars, training losses, and a per-policy performance table."""
     rewards = np.asarray(rewards, dtype=float)
@@ -183,6 +212,8 @@ def _log_mo_wandb(
                 pass
 
     run.log(log_dict, step=num_steps)
+    if front_path is not None:
+        _upload_eval_front(run, front_path)
 
 
 def plot_mo_progress(
@@ -245,6 +276,7 @@ def plot_mo_progress(
             with open(save_dir / 'archive_progress.svg', 'r') as f:
                 archive_svg = f.read()
 
+    front_path = _append_eval_front(save_dir, num_steps, rewards, directives)
     if run:
         with open(save_dir / 'progress.svg', "r") as f:
             svg = f.read()
@@ -259,6 +291,7 @@ def plot_mo_progress(
             elapsed_s=elapsed_s,
             reward_plot_html=archive_svg if archive_svg is not None else svg,
             ref_point_max=training_data.hv_ref_point_max,
+            front_path=front_path,
         )
 
 def default_coloring(tradeoff):
