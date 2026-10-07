@@ -4,11 +4,12 @@
 #SBATCH --mem=32G
 #SBATCH -c 12
 #SBATCH -G 1
-#SBATCH --output=tmlr-%x_%A_%a.out
+#SBATCH --output=%x_%A_%a.out
 
-# Fresh 100M migration campaign for SMORL-TMLR.
-# Do not sbatch this file alone. Pass DOMAIN and an array range, or use
-# scripts/slurm/tmlr_submit_all.sh.
+# Slurm body for the 100M baseline-vs-migration sweep.
+# Do not sbatch this file alone. Submit it through
+# scripts/slurm/submit_100m_baseline_vs_migration.sh
+# or pass DOMAIN and --array yourself for one domain.
 #
 # Each threshold is 80 cells: baseline-100m + e20-f80 .. e50-f50, seeds 0-9.
 # Save dirs and W&B groups are new, so --skip-existing will not resume the
