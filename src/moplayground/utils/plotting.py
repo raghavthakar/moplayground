@@ -42,6 +42,25 @@ def _as_numpy(x) -> np.ndarray:
     return np.asarray(x)
 
 
+def _finite_minmax(values) -> tuple[float, float]:
+    """Min and max ignoring NaN and Inf. Empty input returns (0, 1)."""
+    vals = np.asarray(values, dtype=float).ravel()
+    finite = vals[np.isfinite(vals)]
+    if finite.size == 0:
+        return 0.0, 1.0
+    return float(np.min(finite)), float(np.max(finite))
+
+
+def _axis_limits(values) -> np.ndarray:
+    """Finite axis range. NaN/Inf rewards must not abort training via set_xlim."""
+    lo, hi = _finite_minmax(values)
+    span = hi - lo
+    if span == 0.0:
+        span = 1.0
+    pad = 0.1 * span
+    return np.array([lo - pad, hi + pad])
+
+
 def _objective_names(labels) -> list[str]:
     names = []
     for i, lab in enumerate(labels or []):
@@ -244,42 +263,46 @@ def plot_mo_progress(
             archive_rewards = archive_rewards[None, :]
         training_data.archive_paretos.append(archive_rewards)
 
-    if np.array(training_data.directives).shape[2] == 2:
-        # create the plot
-        fig, axs = plot_sequential_paretos(
-            ax_titles   = training_data.iterations,
-            paretos     = training_data.paretos,
-            directives  = training_data.directives,
-            objectives  = training_data.labels
-        )
-    else:
-        fig, axs = plot_sequential_hypervolume(
-            iterations    = training_data.iterations,
-            paretos       = training_data.paretos
-        )
-    
-    # save and upload to wandb
-    fig.savefig(save_dir / 'progress.svg')
-    plt.close(fig)
-
+    svg = None
     archive_svg = None
-    if training_data.archive_paretos:
-        afig, _ = plot_sequential_archive_paretos(
-            ax_titles=training_data.iterations,
-            paretos=training_data.archive_paretos,
-            objectives=training_data.labels,
-            thresholds=training_data.thresholds or None,
-        )
-        afig.savefig(save_dir / 'archive_progress.svg')
-        plt.close(afig)
-        if run:
-            with open(save_dir / 'archive_progress.svg', 'r') as f:
-                archive_svg = f.read()
+    try:
+        if np.array(training_data.directives).shape[2] == 2:
+            fig, axs = plot_sequential_paretos(
+                ax_titles   = training_data.iterations,
+                paretos     = training_data.paretos,
+                directives  = training_data.directives,
+                objectives  = training_data.labels
+            )
+        else:
+            fig, axs = plot_sequential_hypervolume(
+                iterations    = training_data.iterations,
+                paretos       = training_data.paretos
+            )
+
+        fig.savefig(save_dir / 'progress.svg')
+        plt.close(fig)
+
+        if training_data.archive_paretos:
+            afig, _ = plot_sequential_archive_paretos(
+                ax_titles=training_data.iterations,
+                paretos=training_data.archive_paretos,
+                objectives=training_data.labels,
+                thresholds=training_data.thresholds or None,
+            )
+            afig.savefig(save_dir / 'archive_progress.svg')
+            plt.close(afig)
+            if run:
+                with open(save_dir / 'archive_progress.svg', 'r') as f:
+                    archive_svg = f.read()
+        if run and (save_dir / 'progress.svg').is_file():
+            with open(save_dir / 'progress.svg', 'r') as f:
+                svg = f.read()
+    except Exception as exc:
+        print(f'Warning: progress plot failed at step {int(num_steps)}: {exc}')
+        plt.close('all')
 
     front_path = _append_eval_front(save_dir, num_steps, rewards, directives)
     if run:
-        with open(save_dir / 'progress.svg', "r") as f:
-            svg = f.read()
         elapsed_s = training_data.times[-1] - training_data.start_time
         _log_mo_wandb(
             run=run,
@@ -400,11 +423,11 @@ def plot_sequential_archive_paretos(
             pts.append(arr)
     if pts:
         all_pts = np.concatenate(pts, axis=0)
-        xlim = np.array((np.min(all_pts[:, 0]), np.max(all_pts[:, 0])), dtype=float)
-        ylim = np.array((np.min(all_pts[:, 1]), np.max(all_pts[:, 1])), dtype=float)
+        xlim = np.array(_finite_minmax(all_pts[:, 0]), dtype=float)
+        ylim = np.array(_finite_minmax(all_pts[:, 1]), dtype=float)
     else:
-        xlim = np.array([-1.0, 1.0])
-        ylim = np.array([-1.0, 1.0])
+        xlim = np.array([0.0, 1.0])
+        ylim = np.array([0.0, 1.0])
     if thresholds is not None and len(thresholds) >= 2:
         xlim[0] = min(xlim[0], 0.0, float(thresholds[0]))
         ylim[0] = min(ylim[0], 0.0, float(thresholds[1]))
@@ -457,11 +480,8 @@ def plot_sequential_paretos(
     
     paretos = np.array(paretos)
     directives = np.array(directives)
-    xlim   = np.array((np.min(paretos[..., 0]), np.max(paretos[..., 0])))
-    ylim   = np.array((np.min(paretos[..., 1]), np.max(paretos[..., 1])))
-    border = np.array([-1., 1.])
-    xlim   = xlim + border * np.abs(xlim[1] - xlim[0]) * 0.1
-    ylim   = ylim + border * np.abs(ylim[1] - ylim[0]) * 0.1
+    xlim = _axis_limits(paretos[..., 0])
+    ylim = _axis_limits(paretos[..., 1])
     for ax, x, y, d in zip(axs, ax_titles, paretos, directives):
         ax = plot_pareto(ax, y, default_coloring(d), objectives, set_lims=False)
         ax.set_xlim(xlim)
