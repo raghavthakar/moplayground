@@ -78,6 +78,12 @@ class MOHumanoid(MultiObjectiveBase):
             done   = done
         )
         reward, metrics = self.get_reward_and_metrics(rewards, state.metrics)
+        # If the simulator diverged this step the raw reward is non-finite
+        # (e.g. run = (nan - finite)/dt). Replace any non-finite component with
+        # 0 so the diverged step contributes nothing instead of poisoning the
+        # episodic return / training batch. `fall_termination` flags the same
+        # step as done, which triggers the autoreset to a finite state.
+        reward = self._np.where(self._np.isfinite(reward), reward, 0.0)
         obs = self._get_obs(
             data,
             state.info
@@ -86,7 +92,12 @@ class MOHumanoid(MultiObjectiveBase):
         return self._state_init_fn(data, obs, reward, done, metrics, state.info)
     
     def fall_termination(self, data):
-        return data.qpos[2] < 0.6
+        # Terminate on a fall OR on a non-finite (diverged) state. The latter is
+        # essential: `nan < 0.6` is False, so without the isfinite guard a
+        # diverged episode would never terminate, never autoreset, and leak nan
+        # into every subsequent step for the rest of the fixed-length rollout.
+        nonfinite = ~self._np.isfinite(data.qpos).all()
+        return nonfinite | (data.qpos[2] < 0.6)
 
     def _get_obs(self, data: mjx.Data, info: dict) -> jax.Array:
         del info  # Unused.
