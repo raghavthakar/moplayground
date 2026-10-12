@@ -144,6 +144,8 @@ def run_cell(wandb, mop, mm, base_config, cell, group, save_dir, thresholds=None
     cfg.save_dir = save_dir
     cfg.name = f"{cell['variant']}-seed{cell['seed']}"
     cfg.learning_params.base_ppo_params.seed = cell['seed']
+    if cell.get('num_evals') is not None:
+        cfg.learning_params.base_ppo_params.num_evals = int(cell['num_evals'])
     tags = [group, cell['variant'], f"seed{cell['seed']}", cell['kind']]
     if cell.get('threshold_tag'):
         tags.append(f"thr={cell['threshold_tag']}")
@@ -202,6 +204,12 @@ def main():
     parser.add_argument('--hv-ref', type=str, default=None,
                         help="Maximization-space HV reference, e.g. '-585,-465'. "
                              "Absent => use config.hv_ref_point_max or origin.")
+    parser.add_argument(
+        '--num-evals', type=int, default=None,
+        help='Override base_ppo_params.num_evals. Eval cadence is '
+             'num_timesteps / (num_evals-1) per phase, so a 3x budget needs a '
+             '3x eval count to keep the same spacing.',
+    )
     parser.add_argument('--seeds', default=','.join(map(str, DEFAULT_SEEDS)), help='CSV of seeds.')
     parser.add_argument('--index', type=int, default=None, help='Run only this cell (Slurm array id).')
     parser.add_argument('--list', action='store_true', help='Print the run matrix and exit.')
@@ -223,6 +231,9 @@ def main():
     if hv_ref is not None:
         for c in cells:
             c['hv_ref'] = hv_ref
+    if args.num_evals is not None:
+        for c in cells:
+            c['num_evals'] = int(args.num_evals)
 
     if args.list:
         thr = f'  threshold={args.threshold}' if args.threshold else ''
