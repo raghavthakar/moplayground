@@ -51,10 +51,12 @@ class ExtrinsicArchive:
         return np.stack(self.returns, axis=0)
 
     def ingest(self, step: int, rewards) -> int:
-        """Add unique eval returns that unlock at least one objective.
+        """Add unique gated eval returns that unlock at least one objective.
 
-        ``rewards`` is ``(n_eval, n_obj)``. Identical rows (deterministic eval)
-        collapse to one member via rounding.
+        ``rewards`` is ``(n_eval, n_obj)`` from the threshold-gated eval env,
+        where sub-threshold objectives are ``0.0`` and unlocked objectives have
+        strictly positive surplus ``r_i > 0.0``. Identical rows (deterministic
+        eval) collapse to one member via rounding.
         """
         if hasattr(rewards, 'block_until_ready'):
             rewards = rewards.block_until_ready()
@@ -66,7 +68,7 @@ class ExtrinsicArchive:
         added = 0
         step = int(step)
         for r in rewards:
-            if not np.any(r >= self.thresholds):
+            if not np.any(r > 0.0):
                 continue
             key = tuple(np.round(r.astype(float), 3).tolist())
             if key in self._seen:

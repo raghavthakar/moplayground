@@ -429,10 +429,10 @@ def plot_sequential_archive_paretos(
         xlim = np.array([0.0, 1.0])
         ylim = np.array([0.0, 1.0])
     if thresholds is not None and len(thresholds) >= 2:
-        xlim[0] = min(xlim[0], 0.0, float(thresholds[0]))
-        ylim[0] = min(ylim[0], 0.0, float(thresholds[1]))
-        xlim[1] = max(xlim[1], float(thresholds[0]))
-        ylim[1] = max(ylim[1], float(thresholds[1]))
+        xlim[0] = min(xlim[0], 0.0)
+        ylim[0] = min(ylim[0], 0.0)
+        xlim[1] = max(xlim[1], 0.0)
+        ylim[1] = max(ylim[1], 0.0)
     pad_x = 0.1 * max(xlim[1] - xlim[0], 1.0)
     pad_y = 0.1 * max(ylim[1] - ylim[0], 1.0)
     xlim = xlim + np.array([-pad_x, pad_x])
@@ -448,8 +448,8 @@ def plot_sequential_archive_paretos(
         ax.set_xlabel(objectives[0] if len(objectives) > 0 else '')
         ax.set_ylabel(objectives[1] if len(objectives) > 1 else '')
         if thresholds is not None and len(thresholds) >= 2:
-            ax.axvline(float(thresholds[0]), color='0.6', ls='--', lw=0.8)
-            ax.axhline(float(thresholds[1]), color='0.6', ls='--', lw=0.8)
+            ax.axvline(0.0, color='0.6', ls='--', lw=0.8)
+            ax.axhline(0.0, color='0.6', ls='--', lw=0.8)
         if front.size == 0:
             ax.text(0.5, 0.5, 'empty', transform=ax.transAxes, ha='center', va='center')
             continue

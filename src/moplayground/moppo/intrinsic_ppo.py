@@ -115,11 +115,11 @@ def _maybe_wrap_env(
 
 
 class ExtrinsicBreakthroughEvaluator:
-    """Roll out a directive-free policy; report true MO returns + unlocks.
+    """Roll out a directive-free policy on the gated env; report MO returns + unlocks.
 
-    Uses an ungated eval env so ``episode_metrics['reward']`` is the dense
-    extrinsic objective vector. Compares each eval episode's return against
-    ``unlock_thresholds`` when provided.
+    Uses the same wrapped (threshold-gated) eval env as MORLAX so sub-threshold
+    returns are strictly 0.0 and any positive return ``r_i > 0`` indicates that
+    objective ``i`` crossed its episodic sparsity threshold.
     """
 
     def __init__(
@@ -186,16 +186,16 @@ class ExtrinsicBreakthroughEvaluator:
         }
 
         if self.unlock_thresholds is not None:
-            thr = np.asarray(self.unlock_thresholds, dtype=float)
-            # rewards: [num_eval_envs, num_objs]
-            unlocked = rewards >= thr[None, :]
+            # eval_env is wrapped with EpisodicThresholdWrapper, so returns
+            # below threshold are 0.0 and unlocked objectives have r_i > 0.0.
+            unlocked = rewards > 0.0
             for i in range(self.num_objs):
                 metrics[f'eval/unlock/obj_{i}'] = float(np.mean(unlocked[:, i]))
             metrics['eval/unlock/any'] = float(np.mean(np.any(unlocked, axis=1)))
             metrics['eval/unlock/all'] = float(np.mean(np.all(unlocked, axis=1)))
-            for i in range(self.num_objs):
-                metrics[f'eval/return/obj_{i}/mean'] = float(np.mean(rewards[:, i]))
-                metrics[f'eval/return/obj_{i}/max'] = float(np.max(rewards[:, i]))
+        for i in range(self.num_objs):
+            metrics[f'eval/return/obj_{i}/mean'] = float(np.mean(rewards[:, i]))
+            metrics[f'eval/return/obj_{i}/max'] = float(np.max(rewards[:, i]))
 
         metrics.update(training_metrics)
         return metrics
@@ -361,11 +361,18 @@ def train(
         randomization_fn,
     )
 
-    # Extrinsic eval: never apply episodic threshold gating.
-    if eval_env is None:
-        eval_env = environment
-    eval_env = wrap_extrinsic_eval_env(
-        eval_env, episode_length=episode_length, action_repeat=action_repeat
+    # Wrap eval_env with the same (threshold-gated) wrapper as training so
+    # sub-threshold returns remain strictly 0.0 in the sparse MDP.
+    eval_env = _maybe_wrap_env(
+        eval_env or environment,
+        wrap_env,
+        num_eval_envs,
+        episode_length,
+        action_repeat,
+        device_count=1,
+        key_env=eval_key,
+        wrap_env_fn=wrap_env_fn,
+        randomization_fn=randomization_fn,
     )
 
     if local_devices_to_use > 1 or use_pmap_on_reset:

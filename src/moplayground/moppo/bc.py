@@ -47,7 +47,12 @@ def standard_eval_preferences(num_objectives: int) -> list[np.ndarray]:
 
 
 def _unlock_fraction(rewards: np.ndarray, thresholds: list[float] | None) -> dict:
-    """Fraction of evaluated preferences that cross each threshold."""
+    """Fraction of evaluated preferences that cross each threshold.
+
+    ``rewards`` are collected on the threshold-gated ``demo_env``, where any
+    objective that stays below its threshold has episodic return ``0.0`` and
+    any unlocked objective has positive surplus ``> 0.0``.
+    """
     if thresholds is None or len(thresholds) == 0:
         return {}
     thr = np.asarray(thresholds, dtype=float)
@@ -56,9 +61,10 @@ def _unlock_fraction(rewards: np.ndarray, thresholds: list[float] | None) -> dic
     if rewards.ndim != 2 or rewards.shape[1] < len(thr):
         return {}
     out = {}
+    unlocked = rewards[:, : len(thr)] > 0.0
     for i in range(len(thr)):
-        out[f'unlock_obj_{i}'] = float((rewards[:, i] >= thr[i]).mean())
-    out['unlock_both'] = float((rewards[:, : len(thr)] >= thr).all(axis=1).mean())
+        out[f'unlock_obj_{i}'] = float(unlocked[:, i].mean())
+    out['unlock_both'] = float(unlocked.all(axis=1).mean())
     return out
 
 
