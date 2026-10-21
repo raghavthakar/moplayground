@@ -211,6 +211,7 @@ def _intrinsic_actor_step(
     rnd_state,
     extra_fields=(),
     rnd_reward_scale: float = 1.0,
+    normalizer_params=None,
 ):
     """Env step with RND novelty as the scalar training reward."""
     actions, policy_extras = policy(env_state.obs, key)
@@ -222,6 +223,7 @@ def _intrinsic_actor_step(
         env_state.obs,
         actions,
         scale=rnd_reward_scale,
+        normalizer_params=normalizer_params,
     )
     # Env may return a vector reward; keep it only for diagnostics.
     extrinsic = nstate.reward
@@ -248,6 +250,7 @@ def _generate_intrinsic_unroll(
     rnd_state,
     extra_fields=(),
     rnd_reward_scale: float = 1.0,
+    normalizer_params=None,
 ):
     def f(carry, _):
         state, current_key = carry
@@ -262,6 +265,7 @@ def _generate_intrinsic_unroll(
             rnd_state,
             extra_fields=extra_fields,
             rnd_reward_scale=rnd_reward_scale,
+            normalizer_params=normalizer_params,
         )
         return (nstate, next_key), transition
 
@@ -473,6 +477,10 @@ def train(
             training_state.params.value,
         ))
 
+        rnd_norm_params = (
+            training_state.normalizer_params if normalize_observations else None
+        )
+
         def scan_unroll(carry_u, _):
             current_state, current_key = carry_u
             current_key, next_key = jax.random.split(current_key)
@@ -487,6 +495,7 @@ def train(
                 training_state.rnd_state,
                 extra_fields=('truncation', 'episode_metrics', 'episode_done'),
                 rnd_reward_scale=rnd_reward_scale,
+                normalizer_params=rnd_norm_params,
             )
             return (next_state, next_key), data
 
@@ -529,6 +538,9 @@ def train(
             rnd_optimizer,
             obs_flat,
             act_flat,
+            normalizer_params=(
+                normalizer_params if normalize_observations else None
+            ),
         )
         metrics = {
             **metrics,

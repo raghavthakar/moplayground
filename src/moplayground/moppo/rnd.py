@@ -73,8 +73,20 @@ def init_rnd(
     return module, target_params, state, optimizer
 
 
-def _sa_features(obs, action: jnp.ndarray) -> jnp.ndarray:
-    return jnp.concatenate([flatten_obs(obs), action], axis=-1)
+def _sa_features(
+    obs,
+    action: jnp.ndarray,
+    normalizer_params=None,
+    max_abs_obs: float = 5.0,
+) -> jnp.ndarray:
+    state = flatten_obs(obs)
+    if normalizer_params is not None:
+        mean = flatten_obs(normalizer_params.mean)
+        std = flatten_obs(normalizer_params.std)
+        state = (state - mean) / std
+        if max_abs_obs is not None:
+            state = jnp.clip(state, -max_abs_obs, max_abs_obs)
+    return jnp.concatenate([state, action], axis=-1)
 
 
 def novelty_reward(
@@ -85,13 +97,16 @@ def novelty_reward(
     action: jnp.ndarray,
     eps: float = 1e-8,
     scale: float = 1.0,
+    normalizer_params=None,
 ) -> jnp.ndarray:
     """Normalized novelty used as the intrinsic PPO reward (no grad).
 
     ``scale`` multiplies the std-normalized prediction error (the usual RND
     coefficient). Default 1.0 leaves the running-std unit scale unchanged.
+    When ``normalizer_params`` is provided, observations are standardized and
+    clipped to ``[-5, 5]`` before feeding the RND networks (Burda et al., 2019).
     """
-    x = _sa_features(obs, action)
+    x = _sa_features(obs, action, normalizer_params=normalizer_params)
     target = module.apply(target_params, x)
     pred = module.apply(rnd_state.predictor_params, x)
     raw = jnp.mean(jnp.square(target - pred), axis=-1)
@@ -127,12 +142,13 @@ def update_predictor(
     optimizer: optax.GradientTransformation,
     obs,
     action: jnp.ndarray,
+    normalizer_params=None,
 ) -> Tuple[RNDState, jnp.ndarray]:
     """One Adam step on the predictor; refreshes novelty running stats."""
+    x = _sa_features(obs, action, normalizer_params=normalizer_params)
+    target = jax.lax.stop_gradient(module.apply(target_params, x))
 
     def loss_fn(predictor_params):
-        x = _sa_features(obs, action)
-        target = jax.lax.stop_gradient(module.apply(target_params, x))
         pred = module.apply(predictor_params, x)
         return jnp.mean(jnp.square(target - pred))
 
@@ -140,8 +156,6 @@ def update_predictor(
     updates, opt_state = optimizer.update(grads, rnd_state.optimizer_state)
     predictor_params = optax.apply_updates(rnd_state.predictor_params, updates)
 
-    x = _sa_features(obs, action)
-    target = module.apply(target_params, x)
     pred = module.apply(predictor_params, x)
     raw = jnp.mean(jnp.square(target - pred), axis=-1)
     rnd_state = rnd_state.replace(
