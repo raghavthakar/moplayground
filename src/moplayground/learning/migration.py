@@ -9,9 +9,9 @@ A single sample budget is split between two phases of one MOHopper run:
      cold MORLAX hypernetwork by behavioral cloning. Each teacher's preference
      label is read from its POSITION on the Pareto front (its objective vector
      normalized to the simplex) -- no hand assignment.
-  3. Finetuning: standard MORLAX trains for the rest of the budget, its policy
-     initialized from the BC hypernetwork. MORLAX itself is unchanged; the only
-     migration hook is ``morlax.train(init_hypernetwork_params=...)``.
+     3. Finetuning: standard MORLAX trains for the rest of the budget, its policy
+     initialized from the BC hypernetwork and the observation normalizer that
+     hypernetwork was cloned under. MORLAX training itself is unchanged.
 
 Both phases reuse ``train_policy`` verbatim (phase 2 via a ``handle_params``
 override that injects the BC init), so nothing about either trainer is forked.
@@ -103,10 +103,12 @@ def select_archive_teachers(explore_dir, labels, selection='nondominated', max_t
 def build_bc_init(config, env, explore_dir, run=None):
     """Distill selected exploration teachers into a MORLAX hypernetwork (BC).
 
-    Returns ``(hypernetwork_params, eval_report)``. ``hypernetwork_params`` is
-    ready to seed ``morlax.train``, or ``None`` if exploration produced no usable
-    teachers (finetuning then falls back to a cold MORLAX init). ``eval_report``
-    captures cold vs post-BC rollout metrics at fixed preferences for analysis.
+    Returns ``(hypernetwork_params, normalizer, eval_report)``. Both the
+    hypernetwork and the demo-fitted observation normalizer seed
+    ``morlax.train`` (they are a matched pair). Either params object is
+    ``None`` if exploration produced no usable teachers (finetuning then
+    falls back to a cold MORLAX init). ``eval_report`` captures cold vs
+    post-BC rollout metrics at fixed preferences for analysis.
     """
     mp = config.migration_params
     labels = list(config.env_config.reward.optimization.labels)
@@ -130,7 +132,7 @@ def build_bc_init(config, env, explore_dir, run=None):
         report = {'skipped': True, 'reason': 'no_teachers'}
         if run is not None:
             run.log({'bc/skipped': 1}, step=0)
-        return None, report
+        return None, None, report
     print(f'Migrating {len(teachers_info)} teacher(s) from {explore_dir}:')
     for step, _ckpt, objectives, pref in teachers_info:
         objs = ', '.join(f'{l}={v:.1f}' for l, v in zip(labels, objectives))
@@ -188,9 +190,17 @@ def build_bc_init(config, env, explore_dir, run=None):
     bc_batch = int(mp.bc.batch_size)
     bc_lr = float(mp.bc.lr)
     print(f'Behavioral cloning {num_transitions} transitions into the MORLAX hypernetwork...')
+    normalizer_count = int(num_transitions)
+    count = getattr(normalizer, 'count', None)
+    if count is not None:
+        if hasattr(count, 'hi'):
+            normalizer_count = int(count.hi) * (2 ** 32) + int(count.lo)
+        else:
+            normalizer_count = int(count)
     if run is not None:
         run.log({
             'bc/num_transitions': num_transitions,
+            'bc/normalizer_count': normalizer_count,
             'bc/steps': bc_steps,
             'bc/batch_size': bc_batch,
             'bc/lr': bc_lr,
@@ -282,7 +292,7 @@ def build_bc_init(config, env, explore_dir, run=None):
             'forward_max': _gain('forward_max'),
         },
     }
-    return hypernet_params, eval_report
+    return hypernet_params, normalizer, eval_report
 
 
 def train_migration(config, env, eval_env, run_factory=None):
@@ -330,7 +340,9 @@ def train_migration(config, env, eval_env, run_factory=None):
     # --- Phase 2/3: BC-distill archive teachers into the MORLAX policy init. ---
     print('=== Migration BC: distill archive teachers into MORLAX init ===')
     bc_run = _phase_run('bc')
-    init_hypernetwork_params, bc_eval = build_bc_init(config, env, explore_dir, run=bc_run)
+    init_hypernetwork_params, init_normalizer_params, bc_eval = build_bc_init(
+        config, env, explore_dir, run=bc_run,
+    )
     bc_eval_path = Path(config.save_dir) / base_name / 'bc_eval.json'
     bc_eval_path.parent.mkdir(parents=True, exist_ok=True)
     bc_eval_path.write_text(json.dumps(bc_eval, indent=2) + '\n')
@@ -346,7 +358,9 @@ def train_migration(config, env, eval_env, run_factory=None):
     def handle_params(cfg):
         train_fn, network_factory = setup_morlax(cfg)
         train_fn = functools.partial(
-            train_fn, init_hypernetwork_params=init_hypernetwork_params
+            train_fn,
+            init_hypernetwork_params=init_hypernetwork_params,
+            init_normalizer_params=init_normalizer_params,
         )
         return train_fn, network_factory
 
@@ -366,6 +380,9 @@ def train_migration(config, env, eval_env, run_factory=None):
                 'migration/bc_init_unlock_both': post.get('unlock_both', float('nan')),
                 'migration/bc_hypervolume_gain': bc_eval.get('gain', {}).get(
                     'hypervolume', float('nan')
+                ),
+                'migration/bc_normalizer_seeded': int(
+                    init_normalizer_params is not None
                 ),
             })
         finetune_run.log(payload, step=explore_env_steps)

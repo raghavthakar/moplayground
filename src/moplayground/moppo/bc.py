@@ -4,8 +4,9 @@ This is the migration bridge: given an offline buffer of (observation,
 raw_action, preference) tuples from frozen exploration teachers, train a cold
 MORLAX hypernetwork by pure supervised BC so that at each teacher's labeled
 preference it emits that teacher's actions. The resulting hypernetwork params
-are used verbatim as MORLAX's policy init (see morlax.train's
-``init_hypernetwork_params``); MORLAX training itself is untouched.
+are used, together with the demo-fitted observation normalizer, as
+MORLAX's policy init (see morlax.train's ``init_hypernetwork_params``
+and ``init_normalizer_params``); MORLAX training itself is untouched.
 
 The BC loss vmaps ``policy_network.apply`` over the hypernetwork's per-preference
 batch of policy params -- the hypernet emits one policy per preference in a

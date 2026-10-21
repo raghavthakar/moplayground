@@ -80,6 +80,104 @@ def _strip_weak_type(tree):
     return jax.tree_util.tree_map(f, tree)
 
 
+def _normalizer_count(state) -> int:
+    count = state.count
+    if hasattr(count, 'hi'):
+        return int(count.hi) * (2 ** 32) + int(count.lo)
+    return int(count)
+
+
+def _overlay_normalizer(base, seeded):
+    """Copy BC stats into an env-shaped normalizer without dropping unused keys.
+
+    BC fits stats on ``{'state': ...}`` only (demo buffer). MORLAX updates
+    stats on the full env observation dict (often also ``privileged_state``),
+    and ``running_statistics.update`` requires matching trees. Overlay the
+    seeded leaves onto the env tree and keep the demo ``count`` so the first
+    finetune update does not overwrite the BC mean (rate would be ~1 if
+    count is 0).
+    """
+    if jax.tree_util.tree_structure(base.mean) == jax.tree_util.tree_structure(
+        seeded.mean
+    ):
+        def _check_shape(env_leaf, seeded_leaf):
+            if tuple(env_leaf.shape) != tuple(seeded_leaf.shape):
+                raise ValueError(
+                    'BC normalizer shape does not match env observations: '
+                    f'{tuple(seeded_leaf.shape)} vs {tuple(env_leaf.shape)}'
+                )
+        jax.tree_util.tree_map(_check_shape, base.mean, seeded.mean)
+        return seeded
+
+    if not isinstance(base.mean, dict) or not isinstance(seeded.mean, dict):
+        raise ValueError(
+            'BC normalizer tree does not match MORLAX env observations: '
+            f'{jax.tree_util.tree_structure(seeded.mean)} vs '
+            f'{jax.tree_util.tree_structure(base.mean)}'
+        )
+
+    def overlay(base_leaf, seeded_leaf, name):
+        if isinstance(base_leaf, dict) and isinstance(seeded_leaf, dict):
+            out = dict(base_leaf)
+            for key, value in seeded_leaf.items():
+                if key not in out:
+                    print(f'[morlax] BC normalizer extra key {name}/{key}; ignoring')
+                    continue
+                out[key] = overlay(out[key], value, f'{name}/{key}')
+            return out
+        if tuple(base_leaf.shape) != tuple(seeded_leaf.shape):
+            raise ValueError(
+                f'BC normalizer shape mismatch at {name}: '
+                f'{tuple(seeded_leaf.shape)} vs env {tuple(base_leaf.shape)}'
+            )
+        return seeded_leaf
+
+    mean = overlay(base.mean, seeded.mean, 'mean')
+    std = overlay(base.std, seeded.std, 'std')
+    summed_variance = overlay(
+        base.summed_variance, seeded.summed_variance, 'summed_variance'
+    )
+    # Sibling keys with the same shape as 'state' (privileged_state on these
+    # envs) inherit the seeded stats so a shared count stays consistent.
+    if (
+        isinstance(mean, dict)
+        and 'state' in mean
+        and 'state' in seeded.mean
+        and hasattr(mean['state'], 'shape')
+    ):
+        for key in mean:
+            if key == 'state' or key in seeded.mean:
+                continue
+            if (
+                hasattr(mean[key], 'shape')
+                and tuple(mean[key].shape) == tuple(mean['state'].shape)
+            ):
+                mean[key] = mean['state']
+                std[key] = std['state']
+                summed_variance[key] = summed_variance['state']
+
+    return base.replace(
+        mean=mean,
+        std=std,
+        summed_variance=summed_variance,
+        count=seeded.count,
+        std_eps=seeded.std_eps,
+    )
+
+
+def _seed_normalizer(obs_shape, init_normalizer_params):
+    """Env-shaped normalizer, optionally seeded from a BC-fitted one."""
+    base = running_statistics.init_state(obs_shape)
+    if init_normalizer_params is None:
+        return base
+    seeded = _overlay_normalizer(base, init_normalizer_params)
+    print(
+        '[morlax] Seeded observation normalizer from BC '
+        f'(count={_normalizer_count(seeded)})'
+    )
+    return seeded
+
+
 def _maybe_wrap_env(
     env: envs.Env,
     wrap_env: bool,
@@ -254,6 +352,7 @@ def train(
         factory.MORLAXNetworks
     ]                       = factory.make_morlax_networks,
     init_hypernetwork_params: dict = None,
+    init_normalizer_params  : Optional[running_statistics.RunningStatisticsState] = None,
     seed                    : int = 0,
     use_pmap_on_reset       : bool = True,
     # eval
@@ -539,8 +638,9 @@ def train(
 
     # Initialize model params and training state.
     # Policy init: a BC-pretrained hypernetwork (behavioral migration) when
-    # provided, otherwise the usual random init. This is the only migration hook
-    # in MORLAX -- training itself is unchanged.
+    # provided, otherwise the usual random init. The matching BC observation
+    # normalizer is seeded too -- the cloned weights were trained under those
+    # stats, and a fresh mean-0/std-1 state would scramble the init.
     init_params = losses.MORLAXNetworkParams(
         hypernetwork = (
             init_hypernetwork_params
@@ -552,7 +652,18 @@ def train(
     obs_shape = jax.tree_util.tree_map(
         lambda x: specs.Array(x.shape[-1:], jnp.dtype('float32')), env_state.obs
     )
-    normalizer_params = running_statistics.init_state(obs_shape)
+    if init_hypernetwork_params is None and init_normalizer_params is not None:
+        raise ValueError(
+            'init_normalizer_params was provided without '
+            'init_hypernetwork_params; the two must be a matched pair.'
+        )
+    if init_hypernetwork_params is not None and init_normalizer_params is None:
+        print(
+            '[morlax] Warning: BC hypernetwork seeded without its observation '
+            'normalizer; the policy will see raw (mean-0/std-1) observations '
+            'at step 0.'
+        )
+    normalizer_params = _seed_normalizer(obs_shape, init_normalizer_params)
     training_state = MOTrainingState(  # pytype: disable=wrong-arg-types  # jax-ndarray
         optimizer_state=optimizer.init(init_params),  # pytype: disable=wrong-arg-types  # numpy-scalars
         params=init_params,
