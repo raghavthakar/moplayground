@@ -35,13 +35,21 @@ from moplayground.moppo import bc, factory, teacher_demos
 from moplayground.learning.training import mo_wrapper, setup_morlax, train_policy
 
 
-def pref_from_objectives(objectives) -> np.ndarray:
-    """Preference = the policy's position on the Pareto front (simplex-normalized).
+def pref_from_objectives(objectives, scale=None) -> np.ndarray:
+    """Preference = the policy's scale-normalized position on the Pareto front.
 
-    Negative objective returns are clipped to 0 before normalizing; a degenerate
-    all-zero vector falls back to a uniform preference.
+    Negative objective returns are clipped to 0 before normalizing. When
+    ``scale`` (e.g. per-objective archive maximum) is provided, each objective
+    is divided by its positive scale first so objectives with larger numerical
+    units (e.g. Humanoid energy vs speed) do not crush the preference weight of
+    smaller-scale objectives. A degenerate all-zero vector falls back to a
+    uniform preference.
     """
     o = np.clip(np.asarray(objectives, dtype=float), 0.0, None)
+    if scale is not None:
+        s = np.asarray(scale, dtype=float)
+        denom = np.where(s > 0.0, s, 1.0)
+        o = o / denom
     total = o.sum()
     if total <= 0.0:
         return np.ones_like(o) / len(o)
@@ -53,7 +61,8 @@ def select_archive_teachers(explore_dir, labels, selection='nondominated', max_t
 
     Returns a list of ``(ckpt_step, ckpt_path, objective_vector, preference)``.
     Members are grouped by checkpoint (one policy per eval step); a policy's
-    objective vector is the mean of its archived return rows.
+    objective vector is the mean of its archived return rows, and preference
+    labels are normalized by the per-objective maximum across the archive.
     """
     explore_dir = Path(explore_dir)
     csv_path = explore_dir / 'archive.csv'
@@ -77,21 +86,26 @@ def select_archive_teachers(explore_dir, labels, selection='nondominated', max_t
         raise ValueError(f"Unknown selection '{selection}'. Use 'nondominated' or 'all'.")
 
     labels = list(labels)
-    teachers = []
+    raw_candidates = []
     for ckpt_step, group in subset.groupby('ckpt_step'):
         ckpt = explore_dir / 'archive' / 'ckpts' / f'{int(ckpt_step):012d}'
         if not ckpt.is_dir():
             continue
         objectives = group[labels].mean().to_numpy(dtype=float)
-        teachers.append(
-            (int(ckpt_step), str(ckpt), objectives, pref_from_objectives(objectives))
-        )
-    if not teachers:
+        raw_candidates.append((int(ckpt_step), str(ckpt), objectives))
+    if not raw_candidates:
         print(
             f'[migration] No archived checkpoints under {explore_dir}/archive/ckpts. '
             'Skipping BC (cold init).'
         )
         return []
+
+    obj_matrix = np.stack([obj for (_s, _c, obj) in raw_candidates], axis=0)
+    archive_scale = np.clip(obj_matrix, 0.0, None).max(axis=0)
+    teachers = [
+        (step, ckpt, objectives, pref_from_objectives(objectives, scale=archive_scale))
+        for (step, ckpt, objectives) in raw_candidates
+    ]
 
     teachers.sort(key=lambda t: t[3][0])  # ascending by first-objective share
     if max_teachers and len(teachers) > max_teachers:
