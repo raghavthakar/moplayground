@@ -1,10 +1,11 @@
 """Random Network Distillation (RND) for intrinsic novelty rewards.
 
-Fixed random target network and trainable predictor. Novelty at ``(s, a)`` is
-prediction error, normalized by a running standard deviation for PPO.
+Fixed random target network and trainable predictor. Novelty is prediction
+error on normalized root/CoM state features (excluding actions and high-DoF
+joint configurations), normalized by a running standard deviation for PPO.
 """
 
-from typing import Mapping, Sequence, Tuple
+from typing import Mapping, Optional, Sequence, Tuple
 
 from brax.training.types import Params
 import flax
@@ -13,12 +14,32 @@ import jax
 import jax.numpy as jnp
 import optax
 
+# MOHumanoid flat observation layout (58 dims total):
+#   [0:21]  joint_angles (21)
+#   [21:22] head_height (1)
+#   [22:25] extremities (3)
+#   [25:28] torso_vertical_orientation (3)
+#   [28:31] com_vel (3)
+#   [31:37] root free-joint qvel (6)
+#   [37:58] actuator joint qvel (21)
+_HUMANOID_OBS_DIM = 58
+
 
 def flatten_obs(obs) -> jnp.ndarray:
     """Extract a flat observation vector (handles dict or array obs)."""
     if isinstance(obs, Mapping):
         return obs['state']
     return obs
+
+
+def _root_com_slice(state: jnp.ndarray) -> jnp.ndarray:
+    """Restrict state vector to root/CoM posture and velocity features."""
+    if state.shape[-1] == _HUMANOID_OBS_DIM:
+        return jnp.concatenate(
+            [state[..., 21:22], state[..., 25:37]],
+            axis=-1,
+        )
+    return state
 
 
 class RNDMLP(nn.Module):
@@ -45,21 +66,39 @@ class RNDState:
     novelty_count: jnp.ndarray
 
 
+def _sa_features(
+    obs,
+    action: Optional[jnp.ndarray] = None,
+    normalizer_params=None,
+    max_abs_obs: float = 5.0,
+) -> jnp.ndarray:
+    del action  # Actions are excluded so RND only scores state novelty.
+    state = flatten_obs(obs)
+    if normalizer_params is not None:
+        mean = flatten_obs(normalizer_params.mean)
+        std = flatten_obs(normalizer_params.std)
+        state = (state - mean) / std
+        if max_abs_obs is not None:
+            state = jnp.clip(state, -max_abs_obs, max_abs_obs)
+    return _root_com_slice(state)
+
+
 def init_rnd(
     key: jax.Array,
     obs_dim: int,
-    action_size: int,
+    action_size: int = 0,
     hidden_layer_sizes: Sequence[int] = (256, 256),
     output_size: int = 64,
     learning_rate: float = 1e-4,
 ) -> Tuple[RNDMLP, Params, RNDState, optax.GradientTransformation]:
     """Create target (fixed) + predictor (trainable) and optimizer."""
+    del action_size
     key_target, key_pred = jax.random.split(key)
     module = RNDMLP(
         hidden_layer_sizes=tuple(hidden_layer_sizes),
         output_size=output_size,
     )
-    dummy = jnp.zeros((1, obs_dim + action_size))
+    dummy = _sa_features(jnp.zeros((1, obs_dim)))
     target_params = module.init(key_target, dummy)
     predictor_params = module.init(key_pred, dummy)
     optimizer = optax.adam(learning_rate)
@@ -71,22 +110,6 @@ def init_rnd(
         novelty_count=jnp.array(1e-4),
     )
     return module, target_params, state, optimizer
-
-
-def _sa_features(
-    obs,
-    action: jnp.ndarray,
-    normalizer_params=None,
-    max_abs_obs: float = 5.0,
-) -> jnp.ndarray:
-    state = flatten_obs(obs)
-    if normalizer_params is not None:
-        mean = flatten_obs(normalizer_params.mean)
-        std = flatten_obs(normalizer_params.std)
-        state = (state - mean) / std
-        if max_abs_obs is not None:
-            state = jnp.clip(state, -max_abs_obs, max_abs_obs)
-    return jnp.concatenate([state, action], axis=-1)
 
 
 def novelty_reward(
