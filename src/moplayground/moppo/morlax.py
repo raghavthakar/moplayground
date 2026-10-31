@@ -313,6 +313,31 @@ def _make_reset_envs(local_devices_to_use, use_pmap_on_reset, env, key_env, num_
     return key_envs, env_state, reset_fn
 
 
+def _preserve_policy_branch(old_params, new_params):
+    """Restore the hypernetwork's policy branch from ``old_params``.
+
+    Used during critic-warmup epochs at the start of BC-initialized finetuning:
+    only the value branch (``value_mlp``, ``value_W``, ``value_b``) is updated
+    until the critic is calibrated to the on-policy returns across directives.
+    """
+    old_h = old_params.hypernetwork
+    new_h = new_params.hypernetwork
+    if not isinstance(old_h, Mapping) or 'params' not in old_h:
+        return new_params
+    old_inner = old_h['params']
+    new_inner = dict(new_h['params'])
+    for k in list(new_inner.keys()):
+        if k.startswith('policy'):
+            new_inner[k] = old_inner[k]
+    if isinstance(old_h['params'], flax.core.FrozenDict):
+        new_inner = flax.core.freeze(new_inner)
+    updated_h = dict(new_h)
+    updated_h['params'] = new_inner
+    if isinstance(old_h, flax.core.FrozenDict):
+        updated_h = flax.core.freeze(updated_h)
+    return new_params.replace(hypernetwork=updated_h)
+
+
 def train(
     environment             : envs.Env,
     num_timesteps           : int,
@@ -353,6 +378,7 @@ def train(
     ]                       = factory.make_morlax_networks,
     init_hypernetwork_params: dict = None,
     init_normalizer_params  : Optional[running_statistics.RunningStatisticsState] = None,
+    critic_warmup_epochs    : int = 2,
     seed                    : int = 0,
     use_pmap_on_reset       : bool = True,
     # eval
@@ -581,6 +607,13 @@ def train(
             (),
             length=num_updates_per_batch,
         )
+        if init_hypernetwork_params is not None and critic_warmup_epochs > 0:
+            params = jax.lax.cond(
+                iteration < critic_warmup_epochs,
+                lambda p: _preserve_policy_branch(training_state.params, p),
+                lambda p: p,
+                params,
+            )
 
         new_training_state = MOTrainingState(
             optimizer_state=optimizer_state,
