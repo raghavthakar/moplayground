@@ -52,29 +52,28 @@ def collect_teacher_demos(
     *,
     num_steps: int,
     seed: int = 0,
-    discounting: float = 0.99,
-    reward_scaling: float = 1.0,
     demo_noise_scale: float = 0.1,
+    max_abs_obs: float = 1e4,
 ) -> dict[str, np.ndarray]:
-    """Roll a frozen teacher for ``num_steps`` and return actor + critic demo arrays.
+    """Roll a frozen teacher for ``num_steps`` and return actor demo arrays.
 
     ``env`` is a single-env ``mo_wrapper`` stack (VmapWrapper batches one env,
     so reset takes a batched key of shape ``(1, 2)``). It auto-resets on episode
     end, so one continuous unroll spans many episodes with no manual bookkeeping.
 
-    States are labeled with the teacher's exact noiseless pre-tanh mean ``loc``
-    (from ``extras['distribution_params']``) while the env is stepped with damped
-    exploration noise (``demo_noise_scale``) so trajectories stay in the
-    threshold-unlocking basin yet cover a tube of states around the gait.
-    Discounted per-objective return-to-go vectors ``value_target`` are computed
-    backward from the gated environment rewards to warm-start the hypernetwork's
-    critic branch during BC.
+    States are labeled with the teacher's full action distribution parameters
+    ``distribution_params = (loc, scale_raw)`` (and noiseless pre-tanh mean
+    ``loc``) while the env is stepped with damped exploration noise
+    (``demo_noise_scale``) so trajectories stay in the threshold-unlocking
+    basin yet cover a tube of states around the gait. Any transition with a
+    diverged/non-finite observation or pre-NaN MJX velocity spike
+    (``|obs| > max_abs_obs``) is dropped so it cannot corrupt the BC
+    observation normalizer.
     """
     pref = np.asarray(preference, dtype=np.float32)
     obs_states: list[np.ndarray] = []
     raw_actions: list[np.ndarray] = []
-    rewards: list[np.ndarray] = []
-    dones: list[float] = []
+    dist_params_list: list[np.ndarray] = []
 
     step_fn = jax.jit(env.step)
     key = jax.random.PRNGKey(seed)
@@ -83,8 +82,10 @@ def collect_teacher_demos(
     for _ in range(num_steps):
         key, act_key, noise_key = jax.random.split(key, 3)
         action, extras = teacher_policy(state.obs, act_key)
+        dist_p = None
         if 'distribution_params' in extras:
-            loc, scale_raw = jnp.split(extras['distribution_params'], 2, axis=-1)
+            dist_p = extras['distribution_params']
+            loc, scale_raw = jnp.split(dist_p, 2, axis=-1)
             scale = jax.nn.softplus(scale_raw) + 1e-3
             u_exec = loc + float(demo_noise_scale) * scale * jax.random.normal(
                 noise_key, shape=loc.shape
@@ -98,36 +99,32 @@ def collect_teacher_demos(
                 'Teacher policy did not emit distribution_params or raw_action; '
                 'load it with deterministic=False so BC targets are available.'
             )
-        obs_states.append(_squeeze_batch(np.asarray(state.obs['state'])))
-        raw_actions.append(_squeeze_batch(np.asarray(target_raw)))
+        obs_np = _squeeze_batch(np.asarray(state.obs['state'], dtype=np.float32))
+        raw_np = _squeeze_batch(np.asarray(target_raw, dtype=np.float32))
         state = step_fn(state, action)
-        rewards.append(
-            _squeeze_batch(np.asarray(state.reward, dtype=np.float32))
-            * float(reward_scaling)
-        )
-        dones.append(float(np.asarray(state.done).reshape(-1)[0]))
+        if (
+            np.all(np.isfinite(obs_np))
+            and np.all(np.isfinite(raw_np))
+            and np.max(np.abs(obs_np)) <= float(max_abs_obs)
+        ):
+            obs_states.append(obs_np)
+            raw_actions.append(raw_np)
+            if dist_p is not None:
+                dist_params_list.append(
+                    _squeeze_batch(np.asarray(dist_p, dtype=np.float32))
+                )
 
     obs_arr = np.stack(obs_states, axis=0).astype(np.float32)
-    rewards_arr = np.stack(rewards, axis=0).astype(np.float32)
-    if rewards_arr.ndim == 1:
-        rewards_arr = rewards_arr[:, None]
-    dones_arr = np.asarray(dones, dtype=np.float32)
-
-    value_targets = np.zeros_like(rewards_arr, dtype=np.float32)
-    running_return = np.zeros(rewards_arr.shape[1], dtype=np.float32)
-    gamma = float(discounting)
-    for t in range(len(rewards_arr) - 1, -1, -1):
-        running_return = (
-            rewards_arr[t] + gamma * (1.0 - dones_arr[t]) * running_return
-        )
-        value_targets[t] = running_return
-
-    return {
+    out = {
         'observation_state': obs_arr,
         'raw_action': np.stack(raw_actions, axis=0).astype(np.float32),
         'directive': np.tile(pref, (obs_arr.shape[0], 1)),
-        'value_target': value_targets,
     }
+    if len(dist_params_list) == len(obs_states):
+        out['distribution_params'] = np.stack(
+            dist_params_list, axis=0
+        ).astype(np.float32)
+    return out
 
 
 def merge_demo_buffers(buffers: Sequence[dict[str, np.ndarray]]) -> dict[str, np.ndarray]:
@@ -154,8 +151,8 @@ def demo_buffer_to_jax(buffer: dict[str, np.ndarray]) -> dict[str, jnp.ndarray]:
         'raw_action': jnp.asarray(buffer['raw_action']),
         'directive': jnp.asarray(buffer['directive']),
     }
-    if 'value_target' in buffer:
-        out['value_target'] = jnp.asarray(buffer['value_target'])
+    if 'distribution_params' in buffer:
+        out['distribution_params'] = jnp.asarray(buffer['distribution_params'])
     return out
 
 
@@ -172,8 +169,8 @@ def sample_bc_batch(
         'raw_action': buffer['raw_action'][idx],
         'directive': buffer['directive'][idx],
     }
-    if 'value_target' in buffer:
-        batch['value_target'] = buffer['value_target'][idx]
+    if 'distribution_params' in buffer:
+        batch['distribution_params'] = buffer['distribution_params'][idx]
     return batch
 
 
@@ -183,8 +180,6 @@ def collect_all_teachers(
     *,
     num_steps: int,
     seed: int = 0,
-    discounting: float = 0.99,
-    reward_scaling: float = 1.0,
     demo_noise_scale: float = 0.1,
 ) -> dict[str, np.ndarray]:
     """Collect and merge demos from every teacher."""
@@ -201,8 +196,6 @@ def collect_all_teachers(
             teacher.preference,
             num_steps=num_steps,
             seed=seed + i,
-            discounting=discounting,
-            reward_scaling=reward_scaling,
             demo_noise_scale=demo_noise_scale,
         )
         print(f'  -> {buf["observation_state"].shape[0]} transitions')

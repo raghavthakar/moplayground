@@ -177,8 +177,6 @@ def build_bc_init(config, env, explore_dir, run=None):
 
     demo_env = mo_wrapper(env, episode_length=episode_length, action_repeat=action_repeat)
     num_episodes = int(mp.demos.num_episodes)
-    discounting = float(config.learning_params.base_ppo_params.get('discounting', 0.99))
-    reward_scaling = float(config.learning_params.base_ppo_params.get('reward_scaling', 1.0))
 
     buffer = teacher_demos.demo_buffer_to_jax(
         teacher_demos.collect_all_teachers(
@@ -186,8 +184,6 @@ def build_bc_init(config, env, explore_dir, run=None):
             teacher_specs,
             num_steps=num_episodes * episode_length,
             seed=seed,
-            discounting=discounting,
-            reward_scaling=reward_scaling,
         )
     )
 

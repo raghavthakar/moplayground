@@ -179,37 +179,40 @@ def pretrain_hypernetwork(
     lr: float,
     seed: int = 0,
     log_every: int = 1000,
-    target_action_std: float = 0.25,
     run=None,
 ):
-    """Supervised-BC a MORLAX hypernetwork (actor + critic) on ``buffer``.
+    """Supervised-BC a MORLAX hypernetwork on ``buffer``; return its params.
 
     ``buffer`` is the jax demo buffer from ``teacher_demos.demo_buffer_to_jax``:
     ``{'observation': {'state': (N, obs)}, 'raw_action': (N, act),
-    'directive': (N, num_obj), 'value_target': (N, num_obj)}``.
+    'directive': (N, num_obj), 'distribution_params': (N, 2*act)}``.
+    When ``distribution_params`` is present, the actor branch is trained to
+    match both the teacher's exact pre-tanh mean ``loc`` and its natural action
+    scale ``scale_raw`` (so online finetuning starts at the equilibrium entropy
+    without an entropy-bonus gradient shock).
     """
     hyper = networks.hypernetwork
     policy_apply = jax.vmap(networks.policy_network.apply, in_axes=(None, 0, 0))
-    value_apply = jax.vmap(networks.value_network.apply, in_axes=(None, 0, 0))
-    has_value_target = 'value_target' in buffer
-    std_target = float(target_action_std)
+    parametric_action_distribution = networks.parametric_action_distribution
+    has_dist_params = 'distribution_params' in buffer
 
     def bc_loss(params, batch):
-        policy_params, value_params = hyper.apply(params, batch['directive'])
+        policy_params, _ = hyper.apply(params, batch['directive'])
         logits = policy_apply(normalizer, policy_params, batch['observation'])
-        loc, scale_raw = jnp.split(logits, 2, axis=-1)
-        scale = jax.nn.softplus(scale_raw) + 1e-3
-        policy_loss = jnp.mean(jnp.square(loc - batch['raw_action'])) + jnp.mean(
-            jnp.square(scale - std_target)
+        if has_dist_params:
+            loc, scale_raw = jnp.split(logits, 2, axis=-1)
+            t_loc, t_scale_raw = jnp.split(
+                batch['distribution_params'], 2, axis=-1
+            )
+            scale = jax.nn.softplus(scale_raw) + 1e-3
+            t_scale = jax.nn.softplus(t_scale_raw) + 1e-3
+            return jnp.mean(jnp.square(loc - t_loc)) + 0.1 * jnp.mean(
+                jnp.square(scale - t_scale)
+            )
+        log_prob = parametric_action_distribution.log_prob(
+            logits, batch['raw_action']
         )
-        if has_value_target:
-            v_pred = value_apply(normalizer, value_params, batch['observation'])
-            v_target = jnp.sum(batch['directive'] * batch['value_target'], axis=-1)
-            value_loss = 0.25 * jnp.mean(jnp.square(v_pred - v_target))
-        else:
-            value_loss = jnp.zeros_like(policy_loss)
-        total_loss = policy_loss + value_loss
-        return total_loss, (policy_loss, value_loss)
+        return -jnp.mean(log_prob)
 
     params = hyper.init(jax.random.PRNGKey(seed))
     optimizer = optax.adam(lr)
@@ -218,30 +221,17 @@ def pretrain_hypernetwork(
     @jax.jit
     def train_step(params, opt_state, key):
         batch = sample_bc_batch(key, buffer, batch_size)
-        (loss, (p_loss, v_loss)), grads = jax.value_and_grad(
-            bc_loss, has_aux=True
-        )(params, batch)
+        loss, grads = jax.value_and_grad(bc_loss)(params, batch)
         updates, opt_state = optimizer.update(grads, opt_state)
-        return optax.apply_updates(params, updates), opt_state, loss, p_loss, v_loss
+        return optax.apply_updates(params, updates), opt_state, loss
 
     key = jax.random.PRNGKey(seed)
     for step in range(1, steps + 1):
         key, sub = jax.random.split(key)
-        params, opt_state, loss, p_loss, v_loss = train_step(
-            params, opt_state, sub
-        )
+        params, opt_state, loss = train_step(params, opt_state, sub)
         if step == 1 or step % log_every == 0 or step == steps:
             loss_f = float(loss)
-            p_loss_f = float(p_loss)
-            v_loss_f = float(v_loss)
-            print(
-                f'  [bc {step}/{steps}] loss={loss_f:.4f} '
-                f'(policy={p_loss_f:.4f}, value={v_loss_f:.4f})'
-            )
+            print(f'  [bc {step}/{steps}] loss={loss_f:.4f}')
             if run is not None:
-                run.log({
-                    'bc/loss': loss_f,
-                    'bc/policy_loss': p_loss_f,
-                    'bc/value_loss': v_loss_f,
-                }, step=step)
+                run.log({'bc/loss': loss_f}, step=step)
     return params
