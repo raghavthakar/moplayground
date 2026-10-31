@@ -52,79 +52,39 @@ def collect_teacher_demos(
     *,
     num_steps: int,
     seed: int = 0,
-    demo_noise_scale: float = 0.1,
-    max_abs_obs: float = 1e4,
 ) -> dict[str, np.ndarray]:
-    """Roll a frozen teacher for ``num_steps`` and return actor demo arrays.
+    """Roll a frozen teacher for ``num_steps`` and return demo arrays.
 
     ``env`` is a single-env ``mo_wrapper`` stack (VmapWrapper batches one env,
     so reset takes a batched key of shape ``(1, 2)``). It auto-resets on episode
     end, so one continuous unroll spans many episodes with no manual bookkeeping.
-
-    States are labeled with the teacher's full action distribution parameters
-    ``distribution_params = (loc, scale_raw)`` (and noiseless pre-tanh mean
-    ``loc``) while the env is stepped with damped exploration noise
-    (``demo_noise_scale``) so trajectories stay in the threshold-unlocking
-    basin yet cover a tube of states around the gait. Any transition with a
-    diverged/non-finite observation or pre-NaN MJX velocity spike
-    (``|obs| > max_abs_obs``) is dropped so it cannot corrupt the BC
-    observation normalizer.
     """
     pref = np.asarray(preference, dtype=np.float32)
     obs_states: list[np.ndarray] = []
     raw_actions: list[np.ndarray] = []
-    dist_params_list: list[np.ndarray] = []
 
     step_fn = jax.jit(env.step)
     key = jax.random.PRNGKey(seed)
     key, reset_key = jax.random.split(key)
     state = env.reset(jax.random.split(reset_key, 1))
     for _ in range(num_steps):
-        key, act_key, noise_key = jax.random.split(key, 3)
+        key, act_key = jax.random.split(key)
         action, extras = teacher_policy(state.obs, act_key)
-        dist_p = None
-        if 'distribution_params' in extras:
-            dist_p = extras['distribution_params']
-            loc, scale_raw = jnp.split(dist_p, 2, axis=-1)
-            scale = jax.nn.softplus(scale_raw) + 1e-3
-            u_exec = loc + float(demo_noise_scale) * scale * jax.random.normal(
-                noise_key, shape=loc.shape
-            )
-            action = jnp.tanh(u_exec)
-            target_raw = loc
-        elif 'raw_action' in extras:
-            target_raw = extras['raw_action']
-        else:
+        if 'raw_action' not in extras:
             raise ValueError(
-                'Teacher policy did not emit distribution_params or raw_action; '
-                'load it with deterministic=False so BC targets are available.'
+                'Teacher policy did not emit raw_action; load it with '
+                'deterministic=False so BC targets are available.'
             )
-        obs_np = _squeeze_batch(np.asarray(state.obs['state'], dtype=np.float32))
-        raw_np = _squeeze_batch(np.asarray(target_raw, dtype=np.float32))
+        obs_states.append(_squeeze_batch(np.asarray(state.obs['state'])))
+        raw_actions.append(_squeeze_batch(np.asarray(extras['raw_action'])))
         state = step_fn(state, action)
-        if (
-            np.all(np.isfinite(obs_np))
-            and np.all(np.isfinite(raw_np))
-            and np.max(np.abs(obs_np)) <= float(max_abs_obs)
-        ):
-            obs_states.append(obs_np)
-            raw_actions.append(raw_np)
-            if dist_p is not None:
-                dist_params_list.append(
-                    _squeeze_batch(np.asarray(dist_p, dtype=np.float32))
-                )
 
     obs_arr = np.stack(obs_states, axis=0).astype(np.float32)
-    out = {
+    return {
         'observation_state': obs_arr,
         'raw_action': np.stack(raw_actions, axis=0).astype(np.float32),
         'directive': np.tile(pref, (obs_arr.shape[0], 1)),
     }
-    if len(dist_params_list) == len(obs_states):
-        out['distribution_params'] = np.stack(
-            dist_params_list, axis=0
-        ).astype(np.float32)
-    return out
 
 
 def merge_demo_buffers(buffers: Sequence[dict[str, np.ndarray]]) -> dict[str, np.ndarray]:
@@ -146,14 +106,11 @@ def load_demo_buffer(path: str) -> dict[str, np.ndarray]:
 
 
 def demo_buffer_to_jax(buffer: dict[str, np.ndarray]) -> dict[str, jnp.ndarray]:
-    out = {
+    return {
         'observation': {'state': jnp.asarray(buffer['observation_state'])},
         'raw_action': jnp.asarray(buffer['raw_action']),
         'directive': jnp.asarray(buffer['directive']),
     }
-    if 'distribution_params' in buffer:
-        out['distribution_params'] = jnp.asarray(buffer['distribution_params'])
-    return out
 
 
 def sample_bc_batch(
@@ -164,14 +121,11 @@ def sample_bc_batch(
     """Uniformly sample a BC minibatch from a loaded demo buffer."""
     n = buffer['raw_action'].shape[0]
     idx = jax.random.randint(key, (batch_size,), 0, n)
-    batch = {
+    return {
         'observation': {'state': buffer['observation']['state'][idx]},
         'raw_action': buffer['raw_action'][idx],
         'directive': buffer['directive'][idx],
     }
-    if 'distribution_params' in buffer:
-        batch['distribution_params'] = buffer['distribution_params'][idx]
-    return batch
 
 
 def collect_all_teachers(
@@ -180,9 +134,8 @@ def collect_all_teachers(
     *,
     num_steps: int,
     seed: int = 0,
-    demo_noise_scale: float = 0.1,
 ) -> dict[str, np.ndarray]:
-    """Collect and merge demos from every teacher."""
+    """Collect and merge stochastic demos from every teacher."""
     buffers = []
     for i, teacher in enumerate(teachers):
         print(
@@ -196,7 +149,6 @@ def collect_all_teachers(
             teacher.preference,
             num_steps=num_steps,
             seed=seed + i,
-            demo_noise_scale=demo_noise_scale,
         )
         print(f'  -> {buf["observation_state"].shape[0]} transitions')
         buffers.append(buf)

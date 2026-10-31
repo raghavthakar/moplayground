@@ -185,30 +185,15 @@ def pretrain_hypernetwork(
 
     ``buffer`` is the jax demo buffer from ``teacher_demos.demo_buffer_to_jax``:
     ``{'observation': {'state': (N, obs)}, 'raw_action': (N, act),
-    'directive': (N, num_obj), 'distribution_params': (N, 2*act)}``.
-    When ``distribution_params`` is present, the actor branch is trained to
-    match both the teacher's exact pre-tanh mean ``loc`` and its natural action
-    scale ``scale_raw`` (so online finetuning starts at the equilibrium entropy
-    without an entropy-bonus gradient shock).
+    'directive': (N, num_obj)}``.
     """
     hyper = networks.hypernetwork
     policy_apply = jax.vmap(networks.policy_network.apply, in_axes=(None, 0, 0))
     parametric_action_distribution = networks.parametric_action_distribution
-    has_dist_params = 'distribution_params' in buffer
 
     def bc_loss(params, batch):
         policy_params, _ = hyper.apply(params, batch['directive'])
         logits = policy_apply(normalizer, policy_params, batch['observation'])
-        if has_dist_params:
-            loc, scale_raw = jnp.split(logits, 2, axis=-1)
-            t_loc, t_scale_raw = jnp.split(
-                batch['distribution_params'], 2, axis=-1
-            )
-            scale = jax.nn.softplus(scale_raw) + 1e-3
-            t_scale = jax.nn.softplus(t_scale_raw) + 1e-3
-            return jnp.mean(jnp.square(loc - t_loc)) + 0.1 * jnp.mean(
-                jnp.square(scale - t_scale)
-            )
         log_prob = parametric_action_distribution.log_prob(
             logits, batch['raw_action']
         )
